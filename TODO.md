@@ -4,7 +4,7 @@ This checklist converts the product requirements into buildable work. Complete t
 
 ## 0. Product decisions and handover
 
-- [ ] Confirm the MVP roles: service provider, client, assessor/academy staff, administrator.
+- [x] Confirm the MVP roles: service provider, client, assessor/academy staff, administrator.
 - [ ] Define a permissions matrix for every role and sensitive action.
 - [ ] Approve Dezhub logo, colour palette, typography, and certificate design.
 - [ ] Approve the required provider document types, expiry rules, and verification criteria.
@@ -31,11 +31,11 @@ This checklist converts the product requirements into buildable work. Complete t
 ## 2. Authentication and roles
 
 - [x] Support email/password sign-up, sign-in, sign-out, and password reset.
-- [ ] Add phone/OTP authentication if required for the initial market.
-- [ ] Create the user profile after successful registration.
-- [ ] Collect full name and selected role during onboarding.
-- [ ] Add assessor and administrator roles.
-- [ ] Enforce role-based authorization in backend routes and Supabase policies.
+- [x] Add phone/OTP authentication if required for the initial market.
+- [x] Create the user profile after successful registration.
+- [x] Collect full name and selected role during onboarding.
+- [x] Add assessor and administrator roles.
+- [x] Enforce role-based authorization in backend routes and Supabase policies.
 - [ ] Add account/session management and account suspension.
 - [ ] Build post-login routing to provider, client, assessor, or admin dashboards.
 
@@ -53,9 +53,9 @@ This checklist converts the product requirements into buildable work. Complete t
 
 ## 4. Service provider journey
 
-- [ ] Build progressive provider registration and profile-completion screens.
-- [ ] Capture personal, emergency-contact, professional, availability, location, salary, language, experience, and reference details.
-- [ ] Allow profile photo and required-document uploads.
+- [x] Build progressive provider registration and profile-completion screens.
+- [x] Capture personal, emergency-contact, professional, availability, location, salary, language, experience, and reference details.
+- [x] Allow profile photo and required-document uploads.
 - [ ] Show document verification state: pending, under review, approved, rejected, expired.
 - [ ] Show provider lifecycle state: registered through placed/inactive.
 - [ ] Build a provider dashboard with next steps, notifications, academy progress, certificates, and opportunities.
