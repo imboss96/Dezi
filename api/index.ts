@@ -1,11 +1,23 @@
-import { buildApp } from '../backend/src/app.js'
+import Fastify from 'fastify'
+import cors from '@fastify/cors'
 import type { IncomingMessage, ServerResponse } from 'node:http'
+import { config } from '../backend/src/config.js'
+import { healthRoutes } from '../backend/src/routes/health.js'
+import { profileRoutes } from '../backend/src/routes/profiles.js'
 
-let appPromise: ReturnType<typeof buildApp> | undefined
+let appPromise: ReturnType<typeof createApp> | undefined
+
+async function createApp() {
+  const app = Fastify({ logger: true })
+  await app.register(cors, { origin: config.frontendOrigin === '*' ? true : config.frontendOrigin })
+  await app.register(healthRoutes)
+  await app.register(profileRoutes)
+  return app
+}
 
 export default async function handler(request: IncomingMessage, response: ServerResponse) {
   try {
-    appPromise ??= buildApp()
+    appPromise ??= createApp()
     const app = await appPromise
     await app.ready()
     request.url = request.url?.replace(/^\/api(?=\/|$)/, '') || '/'
