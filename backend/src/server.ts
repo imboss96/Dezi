@@ -1,13 +1,7 @@
-import Fastify from 'fastify'
-import cors from '@fastify/cors'
 import { config } from './config.js'
-import { healthRoutes } from './routes/health.js'
-import { profileRoutes } from './routes/profiles.js'
+import { buildApp } from './app.js'
 
-const app = Fastify({ logger: true })
-await app.register(cors, { origin: config.frontendOrigin })
-await app.register(healthRoutes)
-await app.register(profileRoutes)
+const app = await buildApp()
 
 try {
   await app.listen({ port: config.port, host: '0.0.0.0' })

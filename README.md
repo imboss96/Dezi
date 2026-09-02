@@ -90,6 +90,30 @@ VITE_SUPABASE_PUBLISHABLE_KEY=your-publishable-key
 VITE_API_URL=http://localhost:3000
 ```
 
+## Deploy frontend and backend to Vercel
+
+This repository is configured as one Vercel project. Vercel serves the Vite frontend at `/` and the Fastify API as a serverless function under `/api`:
+
+```text
+Frontend: https://your-app.vercel.app/
+Backend:  https://your-app.vercel.app/api/
+Health:   https://your-app.vercel.app/api/health
+```
+
+Import the GitHub repository into Vercel with the repository root as the project root. Add these production environment variables in **Vercel → Settings → Environment Variables**:
+
+```env
+VITE_SUPABASE_URL=https://your-project.supabase.co
+VITE_SUPABASE_PUBLISHABLE_KEY=your-publishable-key
+VITE_API_URL=/api
+SUPABASE_URL=https://your-project.supabase.co
+SUPABASE_PUBLISHABLE_KEY=your-publishable-key
+SUPABASE_SECRET_KEY=your-server-only-secret-key
+FRONTEND_ORIGIN=https://your-app.vercel.app
+```
+
+Set the Supabase redirect URLs to the Vercel frontend URL, including `https://your-app.vercel.app/reset-password`. Do not add `SUPABASE_SECRET_KEY` to any `VITE_` variable.
+
 ## Run the backend
 
 In a second terminal:
