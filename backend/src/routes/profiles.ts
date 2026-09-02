@@ -1,6 +1,6 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify'
 import { supabaseAdmin, supabaseAuth } from '../lib/supabase.js'
-import { config } from '../config.js'
+import { config, supabaseConfigured } from '../config.js'
 
 type AccountType = 'client' | 'provider'
 type AppRole = 'provider' | 'client' | 'assessor' | 'administrator'
@@ -33,6 +33,7 @@ type ProfileBody = {
 }
 
 async function authenticatedUser(request: FastifyRequest) {
+  if (!supabaseAuth) return null
   const token = request.headers.authorization?.replace(/^Bearer\s+/i, '')
   if (!token) return null
   const { data, error } = await supabaseAuth.auth.getUser(token)
@@ -40,6 +41,7 @@ async function authenticatedUser(request: FastifyRequest) {
 }
 
 async function requireRole(request: FastifyRequest, roles: AppRole[]) {
+  if (!supabaseConfigured || !supabaseAdmin) return { user: null, error: 'Supabase environment variables are not configured' as const }
   const user = await authenticatedUser(request)
   if (!user) return { user: null, error: 'Authentication required' as const }
   const { data, error } = await supabaseAdmin.from('user_roles').select('role').eq('user_id', user.id).maybeSingle()
@@ -49,6 +51,7 @@ async function requireRole(request: FastifyRequest, roles: AppRole[]) {
 
 export async function profileRoutes(app: FastifyInstance) {
   app.get('/v1/roles/me', async (request, reply) => {
+    if (!supabaseConfigured || !supabaseAdmin) return reply.code(503).send({ error: 'Supabase environment variables are not configured' })
     const user = await authenticatedUser(request)
     if (!user) return reply.code(401).send({ error: 'Authentication required' })
     const { data, error } = await supabaseAdmin.from('user_roles').select('role').eq('user_id', user.id).maybeSingle()
@@ -57,40 +60,45 @@ export async function profileRoutes(app: FastifyInstance) {
   })
 
   app.post<{ Body: { userId: string; role: AppRole } }>('/v1/roles', async (request, reply) => {
+    const admin = supabaseAdmin
+    if (!admin) return reply.code(503).send({ error: 'Supabase environment variables are not configured' })
     const access = await requireRole(request, ['administrator'])
-    if (access.error) return reply.code(access.error === 'Authentication required' ? 401 : 403).send({ error: access.error })
+    if (access.error) return reply.code(access.error === 'Authentication required' ? 401 : access.error === 'Supabase environment variables are not configured' ? 503 : 403).send({ error: access.error })
     if (!request.body?.userId || !['provider', 'client', 'assessor', 'administrator'].includes(request.body.role)) return reply.code(400).send({ error: 'userId and a valid role are required' })
-    const { data, error } = await supabaseAdmin.from('user_roles').upsert({ user_id: request.body.userId, role: request.body.role, assigned_by: access.user.id, updated_at: new Date().toISOString() }, { onConflict: 'user_id' }).select().single()
+    const { data, error } = await admin.from('user_roles').upsert({ user_id: request.body.userId, role: request.body.role, assigned_by: access.user.id, updated_at: new Date().toISOString() }, { onConflict: 'user_id' }).select().single()
     if (error) return reply.code(500).send({ error: error.message })
-    await supabaseAdmin.from('audit_logs').insert({ actor_id: access.user.id, target_user_id: request.body.userId, action: 'ROLE_ASSIGNED', details: { role: request.body.role } })
+    await admin.from('audit_logs').insert({ actor_id: access.user.id, target_user_id: request.body.userId, action: 'ROLE_ASSIGNED', details: { role: request.body.role } })
     return data
   })
 
   app.post<{ Body: { email: string; role: 'assessor' | 'administrator' } }>('/v1/staff/invitations', async (request, reply) => {
+    const admin = supabaseAdmin
+    if (!admin) return reply.code(503).send({ error: 'Supabase environment variables are not configured' })
     const access = await requireRole(request, ['administrator'])
-    if (access.error) return reply.code(access.error === 'Authentication required' ? 401 : 403).send({ error: access.error })
+    if (access.error) return reply.code(access.error === 'Authentication required' ? 401 : access.error === 'Supabase environment variables are not configured' ? 503 : 403).send({ error: access.error })
     const email = request.body?.email?.trim().toLowerCase()
     const role = request.body?.role
     if (!email || !/^\S+@\S+\.\S+$/.test(email) || !['assessor', 'administrator'].includes(role)) return reply.code(400).send({ error: 'A valid email and staff role (assessor or administrator) are required' })
-    const existingUsers = await supabaseAdmin.auth.admin.listUsers({ page: 1, perPage: 1000 })
+    const existingUsers = await admin.auth.admin.listUsers({ page: 1, perPage: 1000 })
     if (existingUsers.error) return reply.code(502).send({ error: existingUsers.error.message })
     const existingUser = existingUsers.data.users.find((user) => user.email?.toLowerCase() === email)
     let replacedPendingInvite = false
     if (existingUser) {
       if (existingUser.email_confirmed_at) return reply.code(409).send({ error: 'This user already has an active account. Assign the staff role using the role management endpoint instead.' })
-      const removed = await supabaseAdmin.auth.admin.deleteUser(existingUser.id)
+      const removed = await admin.auth.admin.deleteUser(existingUser.id)
       if (removed.error) return reply.code(502).send({ error: `Unable to resend invitation: ${removed.error.message}` })
       replacedPendingInvite = true
     }
-    const invitation = await supabaseAdmin.auth.admin.inviteUserByEmail(email, { data: { account_type: role }, redirectTo: config.frontendOrigin })
+    const invitation = await admin.auth.admin.inviteUserByEmail(email, { data: { account_type: role }, redirectTo: config.frontendOrigin })
     if (invitation.error || !invitation.data.user) return reply.code(502).send({ error: invitation.error?.message ?? 'Unable to create invitation' })
-    const { error: roleError } = await supabaseAdmin.from('user_roles').upsert({ user_id: invitation.data.user.id, role, assigned_by: access.user.id, updated_at: new Date().toISOString() }, { onConflict: 'user_id' })
+    const { error: roleError } = await admin.from('user_roles').upsert({ user_id: invitation.data.user.id, role, assigned_by: access.user.id, updated_at: new Date().toISOString() }, { onConflict: 'user_id' })
     if (roleError) return reply.code(500).send({ error: roleError.message })
-    await supabaseAdmin.from('audit_logs').insert({ actor_id: access.user.id, target_user_id: invitation.data.user.id, action: 'STAFF_INVITED', details: { email, role, resent: replacedPendingInvite } })
+    await admin.from('audit_logs').insert({ actor_id: access.user.id, target_user_id: invitation.data.user.id, action: 'STAFF_INVITED', details: { email, role, resent: replacedPendingInvite } })
     return reply.code(201).send({ userId: invitation.data.user.id, email, role, status: replacedPendingInvite ? 'resent' : 'invited' })
   })
 
   app.get('/v1/me', async (request, reply) => {
+    if (!supabaseConfigured || !supabaseAdmin) return reply.code(503).send({ error: 'Supabase environment variables are not configured' })
     const user = await authenticatedUser(request)
     if (!user) return reply.code(401).send({ error: 'Authentication required' })
     const { data: profile, error } = await supabaseAdmin
@@ -103,6 +111,7 @@ export async function profileRoutes(app: FastifyInstance) {
   })
 
   app.post<{ Body: ProfileBody }>('/v1/profiles', async (request, reply) => {
+    if (!supabaseConfigured || !supabaseAdmin) return reply.code(503).send({ error: 'Supabase environment variables are not configured' })
     const user = await authenticatedUser(request)
     if (!user) return reply.code(401).send({ error: 'Authentication required' })
     if (
