@@ -4,14 +4,16 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import { config } from '../backend/src/config.js'
 import { healthRoutes } from '../backend/src/routes/health.js'
 import { profileRoutes } from '../backend/src/routes/profiles.js'
+import { lifecycleRoutes } from '../backend/src/routes/lifecycle.js'
 
 let appPromise: ReturnType<typeof createApp> | undefined
 
 async function createApp() {
   const app = Fastify({ logger: true })
-  await app.register(cors, { origin: config.frontendOrigin === '*' ? true : config.frontendOrigin })
+  await app.register(cors, { origin: config.frontendOrigin === '*' ? true : config.frontendOrigin, methods: ['GET', 'HEAD', 'POST', 'PATCH', 'DELETE', 'OPTIONS'] })
   await app.register(healthRoutes)
   await app.register(profileRoutes)
+  await app.register(lifecycleRoutes)
   return app
 }
 

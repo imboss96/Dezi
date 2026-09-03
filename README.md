@@ -37,6 +37,7 @@ Implemented in this repository:
 - Administrator-only staff invitation and role assignment APIs
 - Safe resend behavior for unaccepted staff invitations
 - Audit records for staff invitations and role assignments
+- Assessor/administrator document verification queue and approve/reject endpoints
 - Fastify backend health, profile, role, and staff invitation endpoints
 
 The remaining lifecycle modules, including assessments, academy courses, matching, interviews, contracts, placements, notifications, and payment tracking, are planned in [TODO.md](TODO.md).
@@ -160,9 +161,25 @@ Open **Supabase Dashboard → SQL Editor → New query**. Run these files in ord
 007_staff_invitations_and_audit.sql
 008_profile_availability_fix.sql
 009_complete_profile_columns.sql
+010_lifecycle_tables.sql
+011_profile_skill_level.sql
+012_deduplicate_documents.sql
+013_document_verification.sql
+014_provider_rates.sql
 ```
 
-The migrations create the profile, provider fields, private document storage, server-side roles, signup trigger, audit logs, and security policies.
+The migrations create the profile, provider fields, private document storage, server-side roles, signup trigger, audit logs, document verification metadata, provider rates, and security policies.
+
+Staff verification endpoints:
+
+```text
+GET   /v1/verifications/documents
+GET   /v1/verifications/documents?status=APPROVED
+PATCH /v1/verifications/documents/:id
+Body: { "status": "APPROVED" | "REJECTED", "reviewerNotes": "..." }
+```
+
+These endpoints require a bearer token for an `assessor` or `administrator` role. The queue defaults to pending and under-review documents. Rejections require reviewer notes and every decision is written to `audit_logs`.
 
 ## Staff workflow
 

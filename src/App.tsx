@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   ArrowLeft,
   Bell,
@@ -16,6 +16,7 @@ import {
   LogOut,
   Menu,
   MessageCircle,
+  Pencil,
   Search,
   Save,
   Settings,
@@ -28,6 +29,9 @@ import {
   X,
 } from 'lucide-react'
 import { supabase } from './lib/supabase'
+import { getCurrentUserProfile, saveCurrentUserProfile, updateProfilePhoto } from './lib/api'
+import { deleteDocument, getDocuments, getProviders, getVerificationDocuments, replaceDocument, verifyDocument } from './lib/lifecycleApi'
+import type { DocumentRecord, VerificationDocument } from '../shared/types'
 
 const categories = [
   'All services',
@@ -37,54 +41,18 @@ const categories = [
   'Elder care',
   'Chefs',
 ]
-const services = [
-  {
-    name: 'Amina Muthoni',
-    role: 'Elite nanny and newborn care',
-    location: 'Nairobi, Kenya',
-    rating: '5.0',
-    reviews: 48,
-    price: 'From $18/hr',
-    image:
-      'https://images.unsplash.com/photo-1543333995-a78aea2eee50?auto=format&fit=crop&w=800&q=85',
-    tag: 'Top rated',
-  },
-  {
-    name: 'Wanjiku Njeri',
-    role: 'Detailed home cleaning service',
-    location: 'Nairobi, Kenya',
-    rating: '4.9',
-    reviews: 31,
-    price: 'From $12/hr',
-    image:
-      'https://images.unsplash.com/photo-1581578731548-c64695cc6952?auto=format&fit=crop&w=800&q=85',
-    tag: 'Fast response',
-  },
-  {
-    name: 'James Kariuki',
-    role: 'Safe, professional family driver',
-    location: 'Kiambu, Kenya',
-    rating: '5.0',
-    reviews: 27,
-    price: 'From $15/hr',
-    image:
-      'https://images.unsplash.com/photo-1449965408869-eaa3f722e40d?auto=format&fit=crop&w=800&q=85',
-    tag: 'Verified pro',
-  },
-  {
-    name: 'Miriam Wambui',
-    role: 'Healthy family meals, prepared fresh',
-    location: 'Nairobi, Kenya',
-    rating: '4.8',
-    reviews: 19,
-    price: 'From $20/hr',
-    image:
-      'https://images.unsplash.com/photo-1556910103-1c02745aae4d?auto=format&fit=crop&w=800&q=85',
-    tag: 'New on Dezhub',
-  },
-]
+type ProviderCard = {
+  name: string
+  role: string
+  location: string
+  rating: string
+  reviews: number
+  price: string
+  image: string
+  tag: string
+}
 
-type AccountType = 'client' | 'provider'
+type AccountType = 'client' | 'provider' | 'assessor' | 'administrator'
 type AppRole = AccountType | 'assessor' | 'administrator'
 type AccountWorkspace =
   | 'profile'
@@ -98,6 +66,7 @@ type AccountWorkspace =
   | 'payments'
   | 'settings'
   | 'help'
+  | 'verification'
   | 'staff'
 
 type ProfileDetails = {
@@ -120,8 +89,11 @@ type ProfileDetails = {
   previousJobLocations: string
   availability: string
   salaryExpectation: string
+  rateAmount: string
+  ratePeriod: '' | 'hour' | 'day' | 'month'
   languages: string
   professionalSkills: string
+  skillLevel: string
   preferredWorkLocation: string
   experienceYears: string
   references: string
@@ -192,6 +164,10 @@ const accountWorkspaceContent: Record<
     description:
       'Get help with your account, safety, payments, and using Dezhub.',
   },
+  verification: {
+    title: 'Verification queue',
+    description: 'Review provider documents and keep the trusted provider network moving.',
+  },
   staff: {
     title: 'Staff management',
     description: 'Invite assessors and administrators to help operate Dezhub.',
@@ -226,6 +202,7 @@ function App() {
   const [activeCategory, setActiveCategory] = useState('All services')
   const [query, setQuery] = useState('')
   const [favorites, setFavorites] = useState<string[]>([])
+  const [listedProviders, setListedProviders] = useState<ProviderCard[]>([])
   const [notice, setNotice] = useState(true)
   const [authOpen, setAuthOpen] = useState(
     window.location.pathname === '/reset-password',
@@ -244,9 +221,11 @@ function App() {
   const [accountName, setAccountName] = useState('Your Dezhub account')
   const [accountWorkspace, setAccountWorkspace] =
     useState<AccountWorkspace | null>(null)
-  const [currentPage, setCurrentPage] = useState<'home' | 'profile' | 'dashboard'>(
-    window.location.pathname === '/profile' ? 'profile' : 'home',
+  const [currentPage, setCurrentPage] = useState<'home' | 'profile' | 'dashboard' | 'verification'>(
+    window.location.pathname === '/profile' ? 'profile' : window.location.pathname === '/verification' ? 'verification' : 'home',
   )
+  const [selectedProvider, setSelectedProvider] = useState<ProviderCard | null>(null)
+  const [activeNavTab, setActiveNavTab] = useState<'browse' | 'how' | 'academy'>('browse')
   const [profileDetails, setProfileDetails] = useState<ProfileDetails>({
     fullName: '',
     location: '',
@@ -267,49 +246,100 @@ function App() {
     previousJobLocations: '',
     availability: '',
     salaryExpectation: '',
+    rateAmount: '',
+    ratePeriod: '',
     languages: '',
     professionalSkills: '',
+    skillLevel: '',
     preferredWorkLocation: '',
     experienceYears: '',
     references: '',
   })
   const [profileMessage, setProfileMessage] = useState('')
+  const [profileEditMode, setProfileEditMode] = useState(true)
   const [staffEmail, setStaffEmail] = useState('')
   const [staffRole, setStaffRole] = useState<'assessor' | 'administrator'>('assessor')
   const [staffMessage, setStaffMessage] = useState('')
+  const [verificationDocuments, setVerificationDocuments] = useState<VerificationDocument[]>([])
+  const [verificationMessage, setVerificationMessage] = useState('')
+  const [verificationLoading, setVerificationLoading] = useState(false)
   const [profilePromptVisible, setProfilePromptVisible] = useState(false)
   const [profileCompletionNeeded, setProfileCompletionNeeded] = useState(false)
   const [profilePhoto, setProfilePhoto] = useState<File | null>(null)
   const [profilePhotoUrl, setProfilePhotoUrl] = useState('')
+  const [profilePhotoActionsOpen, setProfilePhotoActionsOpen] = useState(false)
   const [documentFiles, setDocumentFiles] = useState<Record<string, File | null>>({})
+  const [uploadedDocuments, setUploadedDocuments] = useState<DocumentRecord[]>([])
+  const [documentActionMessage, setDocumentActionMessage] = useState('')
+  const [editingDocumentId, setEditingDocumentId] = useState<string | null>(null)
+  const accountMenuRef = useRef<HTMLDivElement>(null)
+  const notificationsRef = useRef<HTMLDivElement>(null)
+  const profilePhotoControlRef = useRef<HTMLDivElement>(null)
   const effectiveRole = currentRole ?? accountType
   const isProvider = effectiveRole === 'provider'
-  const loadProfilePhoto = async (path: string | null | undefined) => {
+  useEffect(() => {
+    void getProviders().then(({ providers }) => setListedProviders(providers.map((provider) => ({
+      name: provider.name,
+      role: provider.role,
+      location: provider.location,
+      rating: 'New',
+      reviews: 0,
+      image: provider.image ?? 'https://images.unsplash.com/photo-1529156069898-49953e39b3ac?auto=format&fit=crop&w=800&q=85',
+      tag: 'Verified provider',
+      price: provider.rateAmount && provider.ratePeriod ? `KSh ${provider.rateAmount.toLocaleString()} / ${provider.ratePeriod}` : 'Rate available on request',
+    })))).catch(() => setListedProviders([]))
+  }, [])
+  const servicesForListing = listedProviders
+  useEffect(() => {
+    const closeMenus = (event: MouseEvent) => {
+      const target = event.target as Node
+      if (!accountMenuRef.current?.contains(target)) setAccountMenuOpen(false)
+      if (!notificationsRef.current?.contains(target)) setNotificationsOpen(false)
+      if (!profilePhotoControlRef.current?.contains(target)) setProfilePhotoActionsOpen(false)
+    }
+    const closeMenusOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setAccountMenuOpen(false)
+        setProfilePhotoActionsOpen(false)
+        setNotificationsOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', closeMenus)
+    document.addEventListener('keydown', closeMenusOnEscape)
+    return () => {
+      document.removeEventListener('mousedown', closeMenus)
+      document.removeEventListener('keydown', closeMenusOnEscape)
+    }
+  }, [])
+  const loadProfilePhoto = useCallback(async (path: string | null | undefined) => {
     if (!path || !supabase) return
     const { data } = await supabase.storage
       .from('provider-documents')
       .createSignedUrl(path, 3600)
     if (data?.signedUrl) setProfilePhotoUrl(data.signedUrl)
-  }
-  const loadSavedProfile = async (userId: string) => {
-    if (!supabase) return
-    const { data: profile } = await supabase
-      .from('profiles')
-      .select('full_name,location,bio,avatar_url,date_of_birth,gender,nationality,phone_number,national_id,emergency_contact,next_of_kin_name,next_of_kin_relationship,next_of_kin_phone,alternative_contact,professional_category,education,previous_employers,previous_job_locations,availability,salary_expectation,languages,professional_skills,preferred_work_location,experience_years,references')
-      .eq('id', userId)
-      .maybeSingle()
+  }, [])
+  const loadSavedProfile = useCallback(async (userId: string) => {
+    if (!supabase || !userId) return
+    const { profile } = await getCurrentUserProfile()
     if (!profile) return
     setProfileDetails({
-      fullName: profile.full_name ?? '', location: profile.location ?? '', bio: profile.bio ?? '',
-      dateOfBirth: profile.date_of_birth ?? '', gender: profile.gender ?? '', nationality: profile.nationality ?? '',
-      phoneNumber: profile.phone_number ?? '', nationalId: profile.national_id ?? '', emergencyContact: profile.emergency_contact ?? '',
-      nextOfKinName: profile.next_of_kin_name ?? '', nextOfKinRelationship: profile.next_of_kin_relationship ?? '', nextOfKinPhone: profile.next_of_kin_phone ?? '', alternativeContact: profile.alternative_contact ?? '',
-      professionalCategory: profile.professional_category ?? '', education: profile.education ?? '', previousEmployers: profile.previous_employers ?? '', previousJobLocations: profile.previous_job_locations ?? '',
-      availability: profile.availability ?? '', salaryExpectation: profile.salary_expectation ?? '', languages: profile.languages ?? '', professionalSkills: profile.professional_skills ?? '', preferredWorkLocation: profile.preferred_work_location ?? '',
-      experienceYears: profile.experience_years?.toString() ?? '', references: profile.references ?? '',
+      fullName: profile.fullName ?? '', location: profile.location ?? '', bio: profile.bio ?? '',
+      dateOfBirth: profile.dateOfBirth ?? '', gender: profile.gender ?? '', nationality: profile.nationality ?? '',
+      phoneNumber: profile.phoneNumber ?? '', nationalId: profile.nationalId ?? '', emergencyContact: profile.emergencyContact ?? '',
+      nextOfKinName: profile.nextOfKinName ?? '', nextOfKinRelationship: profile.nextOfKinRelationship ?? '', nextOfKinPhone: profile.nextOfKinPhone ?? '', alternativeContact: profile.alternativeContact ?? '',
+      professionalCategory: profile.professionalCategory ?? '', education: profile.education ?? '', previousEmployers: profile.previousEmployers ?? '', previousJobLocations: profile.previousJobLocations ?? '', skillLevel: profile.skillLevel ?? '',
+      availability: profile.availability ?? '', salaryExpectation: profile.salaryExpectation ?? '', rateAmount: profile.rateAmount?.toString() ?? '', ratePeriod: profile.ratePeriod ?? '', languages: profile.languages ?? '', professionalSkills: profile.professionalSkills ?? '', preferredWorkLocation: profile.preferredWorkLocation ?? '',
+      experienceYears: profile.experienceYears?.toString() ?? '', references: profile.references ?? '',
     })
-    void loadProfilePhoto(profile.avatar_url)
-  }
+    setProfileEditMode(false)
+    void loadProfilePhoto(profile.avatarUrl)
+    try {
+      const result = await getDocuments()
+      setUploadedDocuments(result.documents)
+    } catch {
+      setUploadedDocuments([])
+    }
+  }, [loadProfilePhoto])
   const requiredProfileFields = [
     ['Full name', profileDetails.fullName],
     ['Date of birth', profileDetails.dateOfBirth],
@@ -322,25 +352,88 @@ function App() {
     ['Professional category', profileDetails.professionalCategory],
     ['Education', profileDetails.education],
     ['Professional skills', profileDetails.professionalSkills],
+    ['Skill level', profileDetails.skillLevel],
     ['Preferred work location', profileDetails.preferredWorkLocation],
     ['Availability', profileDetails.availability],
     ['Years of experience', profileDetails.experienceYears],
     ['Languages', profileDetails.languages],
     ['Expected salary', profileDetails.salaryExpectation],
+    ['Rate amount', profileDetails.rateAmount],
+    ['Rate period', profileDetails.ratePeriod],
     ['Professional references', profileDetails.references],
   ] as const
   const missingProfileFields = requiredProfileFields
     .filter(([, value]) => String(value).trim().length === 0)
     .map(([label]) => label)
   const profileFieldsComplete = missingProfileFields.length === 0
-  const journeyPercent = profileFieldsComplete ? 75 : 50
+  const documentsComplete = providerDocumentTypes.every((document) => uploadedDocuments.some((uploaded) => uploaded.document_type === document.key))
+  const journeyPercent = documentsComplete ? 100 : profileFieldsComplete ? 75 : 50
   const openProfileCompletion = () => {
     window.history.pushState({}, '', '/profile')
     setCurrentPage('profile')
     setProfilePromptVisible(false)
     setNotificationsOpen(false)
   }
-  const filteredServices = services.filter(
+  const editUploadedDocument = async (document: DocumentRecord, file: File | null) => {
+    if (!file || !supabase) return
+    setDocumentActionMessage('Updating document...')
+    const path = `${(await supabase.auth.getUser()).data.user?.id}/document-${Date.now()}-${file.name}`
+    const upload = await supabase.storage.from('provider-documents').upload(path, file, { upsert: false })
+    if (upload.error) { setDocumentActionMessage(`Document update failed: ${upload.error.message}`); return }
+    try {
+      const updated = await replaceDocument(document.id, path, file.name)
+      setUploadedDocuments((documents) => documents.map((item) => item.id === document.id ? updated : item))
+      setEditingDocumentId(null)
+      setDocumentActionMessage('Document updated successfully.')
+    } catch (error) {
+      await supabase.storage.from('provider-documents').remove([path])
+      setDocumentActionMessage(error instanceof Error ? error.message : 'Unable to update document.')
+    }
+  }
+  const changeProfilePhoto = async (file: File | null) => {
+    if (!file || !supabase) return
+    const user = (await supabase.auth.getUser()).data.user
+    if (!user) return
+    setProfileMessage('Updating profile photo...')
+    const path = `${user.id}/profile-${Date.now()}-${file.name}`
+    const upload = await supabase.storage.from('provider-documents').upload(path, file, { upsert: false })
+    if (upload.error) { setProfileMessage(`Profile photo upload failed: ${upload.error.message}`); return }
+    try {
+      await updateProfilePhoto(path)
+      setProfilePhoto(file)
+      setProfilePhotoUrl(URL.createObjectURL(file))
+      setProfilePhotoActionsOpen(false)
+      setProfileMessage('Profile photo updated successfully.')
+    } catch (error) {
+      await supabase.storage.from('provider-documents').remove([path])
+      setProfileMessage(error instanceof Error ? error.message : 'Unable to update profile photo.')
+    }
+  }
+  const removeProfilePhoto = async () => {
+    if (!window.confirm('Remove your profile photo?')) return
+    setProfileMessage('Removing profile photo...')
+    try {
+      await updateProfilePhoto()
+      setProfilePhoto(null)
+      setProfilePhotoUrl('')
+      setProfilePhotoActionsOpen(false)
+      setProfileMessage('Profile photo removed.')
+    } catch (error) {
+      setProfileMessage(error instanceof Error ? error.message : 'Unable to remove profile photo.')
+    }
+  }
+  const removeUploadedDocument = async (document: DocumentRecord) => {
+    if (!window.confirm(`Delete ${document.file_name}? This cannot be undone.`)) return
+    setDocumentActionMessage('Deleting document...')
+    try {
+      await deleteDocument(document.id)
+      setUploadedDocuments((documents) => documents.filter((item) => item.id !== document.id))
+      setDocumentActionMessage('Document deleted successfully.')
+    } catch (error) {
+      setDocumentActionMessage(error instanceof Error ? error.message : 'Unable to delete document.')
+    }
+  }
+  const filteredServices = servicesForListing.filter(
     (service) =>
       `${service.name} ${service.role} ${service.location}`
         .toLowerCase()
@@ -379,7 +472,15 @@ function App() {
       setAccountMenuOpen(false)
       return
     }
+    if (workspace === 'verification') {
+      window.history.pushState({}, '', '/verification')
+      setCurrentPage('verification')
+      void loadVerificationDocuments()
+      setAccountMenuOpen(false)
+      return
+    }
     setAccountWorkspace(workspace)
+    if (workspace === 'academy') setActiveNavTab('academy')
     setAccountMenuOpen(false)
     setCurrentPage(workspace === 'dashboard' ? 'dashboard' : 'home')
     window.setTimeout(() =>
@@ -392,6 +493,7 @@ function App() {
     window.history.pushState({}, '', '/')
     setCurrentPage('home')
     setAccountWorkspace(null)
+    setSelectedProvider(null)
   }
   const inviteStaff = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault()
@@ -407,6 +509,33 @@ function App() {
       setStaffMessage(`Invitation sent successfully. Status: ${result.status ?? 'invited'}.`)
     } catch { setStaffMessage('Backend unavailable. Start the API on port 3000 and try again.') }
   }
+  const loadVerificationDocuments = async () => {
+    setVerificationLoading(true)
+    setVerificationMessage('')
+    try {
+      const result = await getVerificationDocuments()
+      setVerificationDocuments(result.documents)
+    } catch (error) {
+      setVerificationMessage(error instanceof Error ? error.message : 'Unable to load verification queue.')
+    } finally {
+      setVerificationLoading(false)
+    }
+  }
+  const reviewDocument = async (document: VerificationDocument, status: 'APPROVED' | 'REJECTED') => {
+    const reviewerNotes = status === 'REJECTED' ? window.prompt('Add a reason for rejecting this document:')?.trim() : undefined
+    if (status === 'REJECTED' && !reviewerNotes) return
+    setVerificationMessage(`${status === 'APPROVED' ? 'Approving' : 'Rejecting'} ${document.file_name}...`)
+    try {
+      await verifyDocument(document.id, status, reviewerNotes)
+      setVerificationDocuments((documents) => documents.filter((item) => item.id !== document.id))
+      setVerificationMessage(`${document.file_name} marked ${status.toLowerCase()}.`)
+    } catch (error) {
+      setVerificationMessage(error instanceof Error ? error.message : 'Unable to update document verification.')
+    }
+  }
+  useEffect(() => {
+    if (currentPage === 'verification' && isAuthenticated && (currentRole === 'administrator' || currentRole === 'assessor')) void loadVerificationDocuments()
+  }, [currentPage, isAuthenticated, currentRole])
   const saveProfile = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault()
     if (!supabase) {
@@ -439,41 +568,19 @@ function App() {
       avatarUrl = path
       setProfilePhotoUrl(URL.createObjectURL(profilePhoto))
     }
-    const { error } = await supabase.from('profiles').upsert(
-      {
-        id: user.id,
-        email: user.email,
-        full_name: profileDetails.fullName.trim(),
-        account_type: effectiveRole,
-        location: profileDetails.location.trim() || null,
-        bio: profileDetails.bio.trim() || null,
-        date_of_birth: profileDetails.dateOfBirth || null,
-        gender: profileDetails.gender || null,
-        nationality: profileDetails.nationality.trim() || null,
-        phone_number: profileDetails.phoneNumber.trim() || null,
-        national_id: profileDetails.nationalId.trim() || null,
-        emergency_contact: profileDetails.emergencyContact.trim() || null,
-        next_of_kin_name: profileDetails.nextOfKinName.trim() || null,
-        next_of_kin_relationship: profileDetails.nextOfKinRelationship.trim() || null,
-        next_of_kin_phone: profileDetails.nextOfKinPhone.trim() || null,
-        alternative_contact: profileDetails.alternativeContact.trim() || null,
-        professional_category: profileDetails.professionalCategory.trim() || null,
-        education: profileDetails.education.trim() || null,
-        previous_employers: profileDetails.previousEmployers.trim() || null,
-        previous_job_locations: profileDetails.previousJobLocations.trim() || null,
-        availability: profileDetails.availability.trim() || null,
-        salary_expectation: profileDetails.salaryExpectation.trim() || null,
-        languages: profileDetails.languages.trim() || null,
-        professional_skills: profileDetails.professionalSkills.trim() || null,
-        preferred_work_location: profileDetails.preferredWorkLocation.trim() || null,
-        ...(avatarUrl ? { avatar_url: avatarUrl } : {}),
-        experience_years: profileDetails.experienceYears ? Number(profileDetails.experienceYears) : null,
-        references: profileDetails.references.trim() || null,
-      },
-      { onConflict: 'id' },
-    )
-    if (error) {
-      setProfileMessage(error.message)
+    try {
+      await saveCurrentUserProfile({
+        fullName: profileDetails.fullName.trim(), accountType: effectiveRole,
+        location: profileDetails.location.trim(), bio: profileDetails.bio.trim(), avatarUrl: avatarUrl ?? undefined,
+        dateOfBirth: profileDetails.dateOfBirth, gender: profileDetails.gender, nationality: profileDetails.nationality.trim(),
+        phoneNumber: profileDetails.phoneNumber.trim(), nationalId: profileDetails.nationalId.trim(), emergencyContact: profileDetails.emergencyContact.trim(),
+        nextOfKinName: profileDetails.nextOfKinName.trim(), nextOfKinRelationship: profileDetails.nextOfKinRelationship.trim(), nextOfKinPhone: profileDetails.nextOfKinPhone.trim(), alternativeContact: profileDetails.alternativeContact.trim(),
+        professionalCategory: profileDetails.professionalCategory.trim(), education: profileDetails.education.trim(), previousEmployers: profileDetails.previousEmployers.trim(), previousJobLocations: profileDetails.previousJobLocations.trim(), skillLevel: profileDetails.skillLevel as 'Beginner' | 'Intermediate' | 'Advanced' | 'Expert',
+        availability: profileDetails.availability.trim(), salaryExpectation: profileDetails.salaryExpectation.trim(), rateAmount: Number(profileDetails.rateAmount), ratePeriod: profileDetails.ratePeriod || undefined, languages: profileDetails.languages.trim(), professionalSkills: profileDetails.professionalSkills.trim(), preferredWorkLocation: profileDetails.preferredWorkLocation.trim(),
+        experienceYears: profileDetails.experienceYears ? Number(profileDetails.experienceYears) : undefined, references: profileDetails.references.trim(),
+      })
+    } catch (error) {
+      setProfileMessage(error instanceof Error ? error.message : 'Unable to save your profile.')
       return
     }
     const pendingDocuments = providerDocumentTypes.flatMap((document) => {
@@ -487,9 +594,16 @@ function App() {
       const record = await supabase.from('documents').insert({ provider_id: user.id, document_type: document.key, file_name: file.name, storage_path: path, status: 'PENDING' })
       if (record.error) { setProfileMessage(`Document record failed: ${record.error.message}`); return }
     }
+    if (pendingDocuments.length) {
+      const refreshedDocuments = await getDocuments()
+      setUploadedDocuments(refreshedDocuments.documents)
+      setDocumentFiles({})
+    }
+    if (profilePhoto) setProfilePhoto(null)
     setAccountName(profileDetails.fullName.trim())
-    setProfileCompletionNeeded([profileDetails.fullName, profileDetails.dateOfBirth, profileDetails.nationality, profileDetails.phoneNumber, profileDetails.nationalId, profileDetails.nextOfKinName, profileDetails.nextOfKinRelationship, profileDetails.nextOfKinPhone, profileDetails.professionalCategory, profileDetails.education, profileDetails.experienceYears, profileDetails.languages, profileDetails.professionalSkills, profileDetails.availability, profileDetails.preferredWorkLocation, profileDetails.salaryExpectation, profileDetails.references].some((value) => !value))
+    setProfileCompletionNeeded([profileDetails.fullName, profileDetails.dateOfBirth, profileDetails.nationality, profileDetails.phoneNumber, profileDetails.nationalId, profileDetails.nextOfKinName, profileDetails.nextOfKinRelationship, profileDetails.nextOfKinPhone, profileDetails.professionalCategory, profileDetails.education, profileDetails.experienceYears, profileDetails.languages, profileDetails.professionalSkills, profileDetails.availability, profileDetails.preferredWorkLocation, profileDetails.salaryExpectation, profileDetails.rateAmount, profileDetails.ratePeriod, profileDetails.references].some((value) => !value))
     setProfilePromptVisible(false)
+    setProfileEditMode(false)
     setProfileMessage(pendingDocuments.length ? 'Your profile and documents have been submitted for review.' : 'Your profile has been saved.')
   }
   const continueWithGoogle = async () => {
@@ -520,9 +634,9 @@ function App() {
         void auth.from('user_roles').select('role').eq('user_id', user.id).maybeSingle().then(async ({ data: roleData }) => {
           if (roleData?.role) setCurrentRole(roleData.role as AppRole)
           if (roleData?.role === 'provider') {
-            const { data: profile } = await auth.from('profiles').select('avatar_url,full_name,date_of_birth,nationality,phone_number,national_id,next_of_kin_name,next_of_kin_relationship,next_of_kin_phone,professional_category,education,experience_years,languages,professional_skills,availability,preferred_work_location,salary_expectation,references').eq('id', user.id).maybeSingle()
+            const { data: profile } = await auth.from('profiles').select('avatar_url,full_name,date_of_birth,nationality,phone_number,national_id,next_of_kin_name,next_of_kin_relationship,next_of_kin_phone,professional_category,education,experience_years,languages,professional_skills,skill_level,availability,preferred_work_location,salary_expectation,references').eq('id', user.id).maybeSingle()
             void loadProfilePhoto(profile?.avatar_url)
-            const incomplete = !profile || [profile.full_name, profile.date_of_birth, profile.nationality, profile.phone_number, profile.national_id, profile.next_of_kin_name, profile.next_of_kin_relationship, profile.next_of_kin_phone, profile.professional_category, profile.education, profile.experience_years, profile.languages, profile.professional_skills, profile.availability, profile.preferred_work_location, profile.salary_expectation, profile.references].some((value) => !value)
+            const incomplete = !profile || [profile.full_name, profile.date_of_birth, profile.nationality, profile.phone_number, profile.national_id, profile.next_of_kin_name, profile.next_of_kin_relationship, profile.next_of_kin_phone, profile.professional_category, profile.education, profile.experience_years, profile.languages, profile.professional_skills, profile.skill_level, profile.availability, profile.preferred_work_location, profile.salary_expectation, profile.references].some((value) => !value)
             setProfileCompletionNeeded(incomplete)
             setProfilePromptVisible(incomplete)
           }
@@ -569,8 +683,11 @@ function App() {
         previousJobLocations: user?.user_metadata.previous_job_locations ?? '',
         availability: user?.user_metadata.availability ?? '',
         salaryExpectation: user?.user_metadata.salary_expectation ?? '',
+        rateAmount: user?.user_metadata.rate_amount?.toString() ?? '',
+        ratePeriod: user?.user_metadata.rate_period ?? '',
         languages: user?.user_metadata.languages ?? '',
         professionalSkills: user?.user_metadata.professional_skills ?? '',
+        skillLevel: user?.user_metadata.skill_level ?? '',
         preferredWorkLocation: user?.user_metadata.preferred_work_location ?? '',
         experienceYears: user?.user_metadata.experience_years?.toString() ?? '',
         references: user?.user_metadata.references ?? '',
@@ -588,9 +705,9 @@ function App() {
           void auth.from('user_roles').select('role').eq('user_id', user.id).maybeSingle().then(({ data: roleData }) => {
             setCurrentRole((roleData?.role as AppRole | undefined) ?? null)
             if (roleData?.role === 'provider') {
-              void auth.from('profiles').select('avatar_url,full_name,date_of_birth,nationality,phone_number,national_id,next_of_kin_name,next_of_kin_relationship,next_of_kin_phone,professional_category,education,experience_years,languages,professional_skills,availability,preferred_work_location,salary_expectation,references').eq('id', user.id).maybeSingle().then(({ data: profile }) => {
+              void auth.from('profiles').select('avatar_url,full_name,date_of_birth,nationality,phone_number,national_id,next_of_kin_name,next_of_kin_relationship,next_of_kin_phone,professional_category,education,experience_years,languages,professional_skills,skill_level,availability,preferred_work_location,salary_expectation,references').eq('id', user.id).maybeSingle().then(({ data: profile }) => {
                 void loadProfilePhoto(profile?.avatar_url)
-                const incomplete = !profile || [profile.full_name, profile.date_of_birth, profile.nationality, profile.phone_number, profile.national_id, profile.next_of_kin_name, profile.next_of_kin_relationship, profile.next_of_kin_phone, profile.professional_category, profile.education, profile.experience_years, profile.languages, profile.professional_skills, profile.availability, profile.preferred_work_location, profile.salary_expectation, profile.references].some((value) => !value)
+                const incomplete = !profile || [profile.full_name, profile.date_of_birth, profile.nationality, profile.phone_number, profile.national_id, profile.next_of_kin_name, profile.next_of_kin_relationship, profile.next_of_kin_phone, profile.professional_category, profile.education, profile.experience_years, profile.languages, profile.professional_skills, profile.skill_level, profile.availability, profile.preferred_work_location, profile.salary_expectation, profile.references].some((value) => !value)
                 setProfileCompletionNeeded(incomplete)
                 setProfilePromptVisible(incomplete)
               })
@@ -632,8 +749,11 @@ function App() {
           previousJobLocations: user?.user_metadata.previous_job_locations ?? '',
           availability: user?.user_metadata.availability ?? '',
           salaryExpectation: user?.user_metadata.salary_expectation ?? '',
+          rateAmount: user?.user_metadata.rate_amount?.toString() ?? '',
+          ratePeriod: user?.user_metadata.rate_period ?? '',
           languages: user?.user_metadata.languages ?? '',
           professionalSkills: user?.user_metadata.professional_skills ?? '',
+          skillLevel: user?.user_metadata.skill_level ?? '',
           preferredWorkLocation: user?.user_metadata.preferred_work_location ?? '',
           experienceYears: user?.user_metadata.experience_years?.toString() ?? '',
           references: user?.user_metadata.references ?? '',
@@ -641,7 +761,7 @@ function App() {
       },
     )
     return () => listener.subscription.unsubscribe()
-  }, [])
+  }, [loadProfilePhoto, loadSavedProfile])
   const submitAuth = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault()
     const formData = new FormData(event.currentTarget)
@@ -746,25 +866,27 @@ function App() {
             className={menuOpen ? 'main-nav nav-open' : 'main-nav'}
             aria-label="Main navigation"
           >
-            <a className={currentPage === 'home' ? 'active' : ''} href="/" onClick={(event) => { event.preventDefault(); goHome() }}>
+            <a className={activeNavTab === 'browse' ? 'active' : ''} href="/" onClick={(event) => { event.preventDefault(); setActiveNavTab('browse'); goHome() }}>
               Browse services
             </a>
-            <a href="/" onClick={(event) => { event.preventDefault(); goHome() }}>How it works</a>
-            <a href={isAuthenticated ? '/academy' : '/'} onClick={(event) => { event.preventDefault(); isAuthenticated ? openAccountWorkspace('academy') : goHome() }}>Dezhub Academy</a>
+            <a className={activeNavTab === 'how' ? 'active' : ''} href="/" onClick={(event) => { event.preventDefault(); setActiveNavTab('how'); goHome() }}>How it works</a>
+                    <a className={activeNavTab === 'academy' ? 'active' : ''} href={isAuthenticated ? '/academy' : '/'} onClick={(event) => { event.preventDefault(); setActiveNavTab('academy'); if (isAuthenticated) openAccountWorkspace('academy'); else { setAuthMode('signin'); setAuthOpen(true) } }}>Dezhub Academy</a>
           </nav>
           <div className="header-actions">
-            <button
-              className="sell-link"
-              onClick={() => {
-                setAuthMode('register')
-                setAccountType('provider')
-                setRoleSelected(true)
-                setAuthOpen(true)
-              }}
-            >
-              Become a provider
-            </button>
-            <div className="notifications-wrap">
+            {!isAuthenticated && (
+              <button
+                className="sell-link"
+                onClick={() => {
+                  setAuthMode('register')
+                  setAccountType('provider')
+                  setRoleSelected(true)
+                  setAuthOpen(true)
+                }}
+              >
+                Become a provider
+              </button>
+            )}
+            <div className="notifications-wrap" ref={notificationsRef}>
             <button className="icon-button" aria-label="Notifications" aria-expanded={notificationsOpen} onClick={() => setNotificationsOpen((open) => !open)}>
               <Bell size={19} />
               {isAuthenticated && isProvider && profileCompletionNeeded && <i />}
@@ -782,7 +904,7 @@ function App() {
               </div>
             )}
             </div>
-            <div className="account-menu-wrap">
+            <div className="account-menu-wrap" ref={accountMenuRef}>
               <button
                 className="account-button"
                 onClick={openAccount}
@@ -851,6 +973,7 @@ function App() {
                   </div>
                   <div className="account-menu-section">
                     <p>Account</p>
+                    {(currentRole === 'administrator' || currentRole === 'assessor') && <button onClick={() => { openAccountWorkspace('verification'); void loadVerificationDocuments() }}><ShieldCheck size={16} /> Verification queue</button>}
                     {currentRole === 'administrator' && <button onClick={() => openAccountWorkspace('staff')}><UserPlus size={16} /> Invite staff</button>}
                     <button onClick={() => openAccountWorkspace('payments')}>
                       <CreditCard size={16} /> Payments and billing
@@ -872,15 +995,47 @@ function App() {
         </div>
       </header>
       <main id="top" className={currentPage === 'dashboard' ? 'dashboard-mode' : undefined}>
-        {currentPage === 'profile' ? (
+        {selectedProvider ? (
+          <section className="provider-detail-page">
+            <div className="provider-detail-inner">
+              <button className="back-button" onClick={goHome}><ArrowLeft size={17} /> Browse services</button>
+              <section className="provider-hero-card">
+                <img className="provider-detail-photo" src={selectedProvider.image} alt={selectedProvider.name} />
+                <div className="provider-detail-intro"><div className="provider-detail-title"><div><p className="eyebrow">Professional provider</p><h1>{selectedProvider.name}</h1><h2>{selectedProvider.role}</h2><p className="provider-detail-location">📍 {selectedProvider.location}</p></div><span className="verified-badge"><ShieldCheck size={15} /> Verified</span></div><div className="provider-detail-rating"><span><Star size={16} fill="currentColor" /> {selectedProvider.rating}</span><span>{selectedProvider.reviews} reviews</span><span>5 years experience</span></div><div className="provider-trust"><span><ShieldCheck size={14} /> Identity verified</span><span><FileBadge2 size={14} /> Dezhub certified</span></div><div className="provider-detail-actions"><button className="detail-primary">Request interview <ChevronRight size={15} /></button><button className="detail-secondary" onClick={() => toggleFavorite(selectedProvider.name)}><Heart size={15} fill={favorites.includes(selectedProvider.name) ? "currentColor" : "none"} /> {favorites.includes(selectedProvider.name) ? 'Shortlisted' : 'Shortlist'}</button></div></div>
+              </section>
+              <div className="provider-detail-grid">
+                <section className="detail-section detail-about"><p className="eyebrow">About</p><p>{selectedProvider.name} is a {selectedProvider.role.toLowerCase()} with a thoughtful, reliable approach to supporting busy households. Clients can expect clear communication, professional conduct, and care tailored to their needs.</p></section>
+                <section className="detail-section"><p className="eyebrow">Professional skills</p><div className="skill-tags"><span>Childcare</span><span>Infant care</span><span>First aid</span><span>Cooking</span><span>Housekeeping</span><span>Home safety</span></div></section>
+                <section className="detail-section"><p className="eyebrow">Work experience</p><div className="experience-row"><strong>{selectedProvider.role.split(' ')[0]} - {selectedProvider.location.split(',')[0]}</strong><span>2022 - 2026</span></div><div className="experience-row"><strong>Household professional - Mombasa</strong><span>2020 - 2022</span></div></section>
+                <section className="detail-section"><p className="eyebrow">Dezhub verification</p><div className="verification-grid"><span><ShieldCheck size={15} /> Identity</span><span><ShieldCheck size={15} /> References</span><span><ShieldCheck size={15} /> Assessment</span><span><ShieldCheck size={15} /> Training</span></div></section>
+                <section className="detail-section assessment-section"><div><p className="eyebrow">Skills assessment</p><h2>Overall score: 91/100</h2></div><div className="assessment-bars"><span>Childcare <b>95</b></span><i><em style={{ width: '95%' }} /></i><span>Communication <b>90</b></span><i><em style={{ width: '90%' }} /></i><span>Professional conduct <b>94</b></span><i><em style={{ width: '94%' }} /></i></div></section>
+                <section className="detail-section academy-section"><div><p className="eyebrow">Academy & certificates</p><h2><Sparkles size={17} /> Nanny professional training</h2><p>Certified · August 2026</p></div><button className="detail-secondary">View certificate <ChevronRight size={15} /></button></section>
+                <section className="detail-section preference-section"><div><p className="eyebrow">Availability</p><h2 className="available-status"><span /> Available</h2><p>Start date: 15 September · Full-time</p></div><div><p className="eyebrow">Work preferences</p><p>Location: {selectedProvider.location}</p><p>Position: Nanny · Employment: Full-time</p></div></section>
+                <section className="detail-section references-section"><div><p className="eyebrow">References</p><h2>2 professional references available</h2></div><button className="detail-secondary">Request information <ChevronRight size={15} /></button></section>
+              </div>
+              <section className="similar-section"><p className="eyebrow">Similar providers</p><div>{servicesForListing.filter((service) => service.name !== selectedProvider.name).slice(0, 3).map((service) => <button key={service.name} onClick={() => setSelectedProvider(service)}><img src={service.image} alt="" /><span>{service.name}</span></button>)}</div></section>
+            </div>
+          </section>
+        ) : currentPage === 'verification' ? (
+          <section className="verification-page">
+            <div className="verification-page-inner">
+              <button className="back-button" onClick={goHome}><ArrowLeft size={17} /> Back to Dezhub</button>
+              <div className="verification-page-heading"><div><p className="eyebrow">Operations workspace</p><h1>Verification queue</h1><p>Review provider documents and keep the trusted provider network moving.</p></div><ShieldCheck size={38} /></div>
+              {!isAuthenticated || (currentRole !== 'administrator' && currentRole !== 'assessor') ? <div className="verification-access-denied"><ShieldCheck size={22} /><h2>Staff access required</h2><p>Only assessors and administrators can review provider documents.</p></div> : <div className="verification-standalone-panel"><div className="verification-workspace-heading"><div><p className="eyebrow">Provider documents</p><h3>Documents awaiting your review</h3></div><button className="profile-edit-button" type="button" onClick={() => void loadVerificationDocuments()}><FileCheck2 size={15} /> Refresh</button></div>{verificationMessage && <p className="profile-message" role="status">{verificationMessage}</p>}{verificationLoading ? <p className="verification-empty">Loading verification queue...</p> : verificationDocuments.length === 0 ? <p className="verification-empty">No documents are waiting for review.</p> : <div className="verification-items">{verificationDocuments.map((document) => <article className="verification-item" key={document.id}><div className="verification-file"><FileCheck2 size={20} /><div><strong>{document.profiles.full_name}</strong><span>{document.profiles.professional_category || 'Provider'} · {document.profiles.email || 'No email'}</span><small>{document.document_type.replace(/_/g, ' ')} · {document.file_name}</small></div></div><div className="verification-item-actions">{document.signed_url && <a href={document.signed_url} target="_blank" rel="noreferrer">View document</a>}<button className="verification-approve" type="button" onClick={() => void reviewDocument(document, 'APPROVED')}><ShieldCheck size={14} /> Approve</button><button className="verification-reject" type="button" onClick={() => void reviewDocument(document, 'REJECTED')}>Reject</button></div></article>)}</div>}</div>}
+            </div>
+          </section>
+        ) : currentPage === 'profile' ? (
           <section className="profile-page">
             <div className="profile-page-inner">
               <button className="back-button" onClick={goHome}>
                 <ArrowLeft size={17} /> Back to Dezhub
               </button>
               <div className="profile-page-heading">
-                <div className="profile-page-avatar">
-                  {profilePhotoUrl ? <img src={profilePhotoUrl} alt="" /> : accountName.charAt(0).toUpperCase()}
+                <div className="profile-photo-control" ref={profilePhotoControlRef}>
+                  <button className="profile-page-avatar" type="button" onClick={() => setProfilePhotoActionsOpen((open) => !open)} aria-label="Manage profile photo" aria-expanded={profilePhotoActionsOpen}>
+                    {profilePhotoUrl ? <img src={profilePhotoUrl} alt="" /> : accountName.charAt(0).toUpperCase()}
+                  </button>
+                  {profilePhotoActionsOpen && <div className="profile-photo-actions"><label><span>Change photo</span><input type="file" accept="image/*" onChange={(event) => { void changeProfilePhoto(event.target.files?.[0] ?? null) }} /></label>{profilePhotoUrl && <button type="button" onClick={() => void removeProfilePhoto()}>Remove photo</button>}</div>}
                 </div>
                 <div>
                   <p className="eyebrow">My account</p>
@@ -913,7 +1068,7 @@ function App() {
                     <CircleHelp size={16} /> Help centre
                   </button>
                 </aside>
-                <form className="profile-form" onSubmit={saveProfile}>
+                <form className={profileEditMode ? 'profile-form' : 'profile-form profile-preview'} onSubmit={saveProfile}>
                   <div className="profile-form-heading">
                     <div>
                       <h2>Personal information</h2>
@@ -931,6 +1086,7 @@ function App() {
                             ? 'Administrator'
                             : 'Client'}
                     </span>
+                    {!profileEditMode && <button className="profile-edit-button" type="button" onClick={() => setProfileEditMode(true)}><Pencil size={14} /> Edit profile</button>}
                   </div>
                   <label>
                     Full name
@@ -978,12 +1134,15 @@ function App() {
                       <label>Education<input value={profileDetails.education} onChange={(event) => setProfileDetails((details) => ({ ...details, education: event.target.value }))} placeholder="Highest education or training" required /></label>
                       <div className="profile-field-grid"><label>Previous employers<textarea rows={3} value={profileDetails.previousEmployers} onChange={(event) => setProfileDetails((details) => ({ ...details, previousEmployers: event.target.value }))} placeholder="Employer, role, and dates" /></label><label>Previous job locations<textarea rows={3} value={profileDetails.previousJobLocations} onChange={(event) => setProfileDetails((details) => ({ ...details, previousJobLocations: event.target.value }))} placeholder="Cities or countries" /></label></div>
                       <label>Professional skills<input value={profileDetails.professionalSkills} onChange={(event) => setProfileDetails((details) => ({ ...details, professionalSkills: event.target.value }))} placeholder="e.g. newborn care, cooking, first aid" required /></label>
+                      <label>Skill level<select value={profileDetails.skillLevel} onChange={(event) => setProfileDetails((details) => ({ ...details, skillLevel: event.target.value }))} required><option value="">Select skill level</option><option>Beginner</option><option>Intermediate</option><option>Advanced</option><option>Expert</option></select></label>
                       <label>Preferred work location<input value={profileDetails.preferredWorkLocation} onChange={(event) => setProfileDetails((details) => ({ ...details, preferredWorkLocation: event.target.value }))} placeholder="Where would you like to work?" required /></label>
                       <div className="profile-field-grid"><label>Availability<input value={profileDetails.availability} onChange={(event) => setProfileDetails((details) => ({ ...details, availability: event.target.value }))} placeholder="e.g. Full-time, weekdays" required /></label><label>Years of experience<input type="number" min="0" max="60" value={profileDetails.experienceYears} onChange={(event) => setProfileDetails((details) => ({ ...details, experienceYears: event.target.value }))} placeholder="e.g. 5" required /></label></div>
-                      <div className="profile-field-grid"><label>Languages<input value={profileDetails.languages} onChange={(event) => setProfileDetails((details) => ({ ...details, languages: event.target.value }))} placeholder="e.g. English, Swahili" required /></label><label>Expected salary<input value={profileDetails.salaryExpectation} onChange={(event) => setProfileDetails((details) => ({ ...details, salaryExpectation: event.target.value }))} placeholder="e.g. $600 per month" required /></label></div>
+                      <div className="profile-field-grid"><label>Languages<input value={profileDetails.languages} onChange={(event) => setProfileDetails((details) => ({ ...details, languages: event.target.value }))} placeholder="e.g. English, Swahili" required /></label><label>Expected salary<input value={profileDetails.salaryExpectation} onChange={(event) => setProfileDetails((details) => ({ ...details, salaryExpectation: event.target.value }))} placeholder="e.g. KSh 60,000 per month" required /></label></div>
+                      <div className="profile-field-grid"><label>Service rate (KSh)<input type="number" min="1" step="0.01" value={profileDetails.rateAmount} onChange={(event) => setProfileDetails((details) => ({ ...details, rateAmount: event.target.value }))} placeholder="e.g. 2500" required /></label><label>Rate period<select value={profileDetails.ratePeriod} onChange={(event) => setProfileDetails((details) => ({ ...details, ratePeriod: event.target.value as ProfileDetails['ratePeriod'] }))} required><option value="">Select rate period</option><option value="hour">Per hour</option><option value="day">Per day</option><option value="month">Per month</option></select></label></div>
                       <label>Professional references<textarea rows={4} value={profileDetails.references} onChange={(event) => setProfileDetails((details) => ({ ...details, references: event.target.value }))} placeholder="Names, roles, and contact details" required /></label>
                       <label className="file-input">Profile photo<input type="file" accept="image/*" onChange={(event) => { const file = event.target.files?.[0] ?? null; setProfilePhoto(file); if (file) setProfilePhotoUrl(URL.createObjectURL(file)) }} /></label>
-                      <div className="document-upload"><strong>Required documents</strong><span>Upload clear copies. Each document starts as pending review.</span>{providerDocumentTypes.map((document) => <label className="file-input" key={document.key}>{document.label}<input type="file" accept={document.accept} multiple={document.key === 'supporting'} onChange={(event) => setDocumentFiles((files) => ({ ...files, [document.key]: event.target.files?.[0] ?? null }))} /></label>)}</div>
+                      {uploadedDocuments.length < providerDocumentTypes.length && <div className="document-upload"><strong>Required documents</strong><span>Upload clear copies. Each document starts as pending review.</span>{providerDocumentTypes.filter((document) => !uploadedDocuments.some((uploaded) => uploaded.document_type === document.key)).map((document) => <label className="file-input" key={document.key}>{document.label}<input type="file" accept={document.accept} multiple={document.key === 'supporting'} onChange={(event) => setDocumentFiles((files) => ({ ...files, [document.key]: event.target.files?.[0] ?? null }))} /></label>)}</div>}
+                      {uploadedDocuments.length > 0 && <div className="uploaded-documents"><div className="uploaded-documents-heading"><div><h3>Uploaded documents</h3><p>Your saved files are available below.</p></div><span>{uploadedDocuments.length} file{uploadedDocuments.length === 1 ? '' : 's'}</span></div>{documentActionMessage && <p className="document-action-message" role="status">{documentActionMessage}</p>}{uploadedDocuments.map((document) => <div className="uploaded-document" key={document.id}>{document.signed_url && /\.(png|jpe?g|gif|webp)$/i.test(document.file_name) ? <img src={document.signed_url} alt={document.file_name} /> : <span className="uploaded-document-file"><FileCheck2 size={21} /></span> }<div><strong>{providerDocumentTypes.find((item) => item.key === document.document_type)?.label ?? document.file_name}</strong><small>{document.file_name} · <em>{document.status.replace('_', ' ')}</em></small></div><div className="uploaded-document-actions">{document.signed_url && <a href={document.signed_url} target="_blank" rel="noreferrer">View</a>}<button type="button" onClick={() => setEditingDocumentId(editingDocumentId === document.id ? null : document.id)} aria-label={`Edit ${document.file_name}`}>Edit</button><button className="document-delete" type="button" onClick={() => void removeUploadedDocument(document)} aria-label={`Delete ${document.file_name}`}>Delete</button></div>{editingDocumentId === document.id && <label className="document-replace">Choose replacement<input type="file" accept={providerDocumentTypes.find((item) => item.key === document.document_type)?.accept} onChange={(event) => { void editUploadedDocument(document, event.target.files?.[0] ?? null) }} /></label>}</div>)}</div>}
                     </div>
                   )}
                   <label>
@@ -1007,7 +1166,7 @@ function App() {
                   {profileMessage && (
                     <p className="profile-message">{profileMessage}</p>
                   )}
-                  <button className="profile-save" type="submit">
+                  <button className={profileEditMode || Object.values(documentFiles).some(Boolean) ? 'profile-save' : 'profile-save profile-save-hidden'} type="submit">
                     <Save size={16} /> Save profile
                   </button>
                 </form>
@@ -1082,11 +1241,11 @@ function App() {
                       <section className="journey-panel" aria-labelledby="journey-title">
                         <div className="journey-heading"><div><p className="eyebrow">Your Dezhub journey</p><h2 id="journey-title">A few steps closer to your next opportunity</h2></div><strong>{journeyPercent}% <span>complete</span></strong></div>
                         <div className="journey-progress"><span style={{ width: `${journeyPercent}%` }} /></div>
-                        <div className="journey-steps"><span className="journey-step done">✓ Account</span><span className="journey-step done">✓ Email</span><span className={profileFieldsComplete ? 'journey-step done' : 'journey-step'}>{profileFieldsComplete ? '✓' : '○'} Profile</span><span className="journey-step">○ Documents</span></div>
-                        <div className="next-step"><div><p className="eyebrow">Next step</p><strong>{profileFieldsComplete ? 'Upload your verification documents' : 'Complete your professional profile'}</strong></div><button className="dashboard-primary" onClick={openProfileCompletion}>Continue <ChevronRight size={15} /></button></div>
+                        <div className="journey-steps"><span className="journey-step done">✓ Account</span><span className="journey-step done">✓ Email</span><span className={profileFieldsComplete ? 'journey-step done' : 'journey-step'}>{profileFieldsComplete ? '✓' : '○'} Profile</span><span className={documentsComplete ? 'journey-step done' : 'journey-step'}>{documentsComplete ? '✓' : '○'} Documents</span></div>
+                        <div className="next-step"><div><p className="eyebrow">Next step</p><strong>{!profileFieldsComplete ? 'Complete your professional profile' : !documentsComplete ? 'Upload your verification documents' : 'Your profile is ready for review'}</strong></div><button className="dashboard-primary" onClick={openProfileCompletion}>{documentsComplete ? 'View profile' : 'Continue'} <ChevronRight size={15} /></button></div>
                       </section>
                       <div className="dashboard-two-column">
-                        <section className="dashboard-card"><div className="dashboard-card-heading"><p className="eyebrow">Your profile</p><CircleUserRound size={18} /></div><div className="dashboard-profile-summary"><div className="dashboard-profile-photo">{profilePhotoUrl ? <img src={profilePhotoUrl} alt="" /> : accountName.charAt(0).toUpperCase()}</div><div><strong>{accountName}</strong><span>{profileDetails.professionalCategory || 'Professional provider'}</span><span>{profileDetails.location || 'Add your location'}</span></div></div><button className="dashboard-link" onClick={() => openAccountWorkspace('profile')}>View profile <ChevronRight size={14} /></button></section>
+                        <section className="dashboard-card"><div className="dashboard-card-heading"><p className="eyebrow">Your profile</p><CircleUserRound size={18} /></div><div className="dashboard-profile-summary"><div className="dashboard-profile-photo">{profilePhotoUrl ? <img src={profilePhotoUrl} alt="" /> : accountName.charAt(0).toUpperCase()}</div><div><strong>{accountName}</strong><span>{profileDetails.professionalCategory || 'Professional provider'}</span><span>{profileDetails.skillLevel ? `${profileDetails.skillLevel} level` : 'Add your skill level'}</span><span>{profileDetails.location || 'Add your location'}</span></div></div><button className="dashboard-link" onClick={() => openAccountWorkspace('profile')}>View profile <ChevronRight size={14} /></button></section>
                         <section className="dashboard-card"><div className="dashboard-card-heading"><p className="eyebrow">Verification</p><ShieldCheck size={18} /></div><div className="verification-list"><span className="verification-done">✓ <b>Email</b></span><span className="verification-done">✓ <b>Phone</b></span><span className="verification-pending">⏳ <b>ID</b><small>Under review</small></span><span className="verification-open">○ <b>Good conduct</b></span></div><button className="dashboard-link" onClick={openProfileCompletion}>View documents <ChevronRight size={14} /></button></section>
                       </div>
                       <section className="dashboard-card dashboard-learning"><div><p className="eyebrow">Dezhub Academy</p><h2>Nanny training</h2><p>Strengthen your skills and prepare for your next assessment.</p><div className="learning-progress"><span /></div><small>80% complete</small><button className="dashboard-link" onClick={() => openAccountWorkspace('academy')}>Continue course <ChevronRight size={14} /></button></div><div className="assessment"><p className="eyebrow">Skills assessment</p><strong>Not completed</strong><button className="dashboard-primary">Start assessment <ChevronRight size={15} /></button></div></section>
@@ -1134,6 +1293,14 @@ function App() {
                         </div>
                       </section>
                     )}
+                    {accountWorkspace === 'academy' && (
+                      <section className="academy-page" aria-labelledby="academy-title">
+                        <div className="academy-page-hero"><div><p className="eyebrow">DEZHUB ACADEMY</p><h3 id="academy-title">Build skills that open doors.</h3><p>Practical learning for confident, trusted household professionals.</p></div><div className="academy-hero-mark"><Sparkles size={25} /><span>Learn · Practice · Grow</span></div></div>
+                        <div className="academy-stats"><div><span>Current progress</span><strong>80%</strong><small>Across 1 course</small></div><div><span>Learning time</span><strong>4.5 hrs</strong><small>This month</small></div><div><span>Certificates</span><strong>0</strong><small>Complete a course to earn one</small></div></div>
+                        <div className="academy-content-grid"><section className="academy-course-card"><div className="academy-card-top"><div><p className="eyebrow">CONTINUE LEARNING</p><h4>Professional household care</h4><p>Build a strong foundation in care, communication, and professional conduct.</p></div><span className="academy-course-icon"><Sparkles size={20} /></span></div><div className="academy-course-progress"><div><span>80% complete</span><b>8 of 10 lessons</b></div><div className="learning-progress"><span /></div></div><div className="academy-course-footer"><span><FileCheck2 size={15} /> 10 lessons</span><span><CircleHelp size={15} /> Beginner</span><button className="dashboard-primary" type="button">Continue course <ChevronRight size={15} /></button></div></section><aside className="academy-assessment-card"><p className="eyebrow">NEXT MILESTONE</p><h4>Skills assessment</h4><p>Test what you have learned when your course is complete.</p><div className="academy-assessment-status"><span className="academy-status-dot" /> Not started</div><button className="dashboard-link" type="button">View assessment <ChevronRight size={14} /></button></aside></div>
+                        <div className="academy-lower-grid"><section><div className="academy-section-title"><div><p className="eyebrow">EXPLORE COURSES</p><h4>Learn at your pace</h4></div><button className="dashboard-link" type="button">View all <ChevronRight size={14} /></button></div><div className="academy-course-list"><article><span className="academy-list-icon coral"><Heart size={18} /></span><div><strong>Safe and thoughtful care</strong><small>6 lessons · 45 min</small></div><span className="academy-course-state">Start</span></article><article><span className="academy-list-icon teal"><MessageCircle size={18} /></span><div><strong>Professional communication</strong><small>5 lessons · 35 min</small></div><span className="academy-course-state">Start</span></article></div></section><section className="academy-certificate-card"><p className="eyebrow">YOUR CERTIFICATES</p><FileBadge2 size={22} /><h4>Earn your first certificate</h4><p>Complete your course and assessment to show clients what you know.</p><button className="dashboard-link" type="button" onClick={() => openAccountWorkspace('certificates')}>View certificates <ChevronRight size={14} /></button></section></div>
+                      </section>
+                    )}
                     {accountWorkspace === 'staff' && currentRole === 'administrator' && (
                       <form className="staff-invite-form" onSubmit={inviteStaff}>
                         <label>Staff email<input type="email" value={staffEmail} onChange={(event) => setStaffEmail(event.target.value)} placeholder="colleague@example.com" required /></label>
@@ -1141,6 +1308,13 @@ function App() {
                         <button className="profile-save" type="submit"><UserPlus size={16} /> Send invitation</button>
                         {staffMessage && <p className="profile-message">{staffMessage}</p>}
                       </form>
+                    )}
+                    {accountWorkspace === 'verification' && (currentRole === 'administrator' || currentRole === 'assessor') && (
+                      <div className="verification-workspace">
+                        <div className="verification-workspace-heading"><div><p className="eyebrow">Provider documents</p><h3>Documents awaiting your review</h3></div><button className="profile-edit-button" type="button" onClick={() => void loadVerificationDocuments()}><FileCheck2 size={15} /> Refresh</button></div>
+                        {verificationMessage && <p className="profile-message" role="status">{verificationMessage}</p>}
+                        {verificationLoading ? <p className="verification-empty">Loading verification queue...</p> : verificationDocuments.length === 0 ? <p className="verification-empty">No documents are waiting for review.</p> : <div className="verification-items">{verificationDocuments.map((document) => <article className="verification-item" key={document.id}><div className="verification-file"><FileCheck2 size={20} /><div><strong>{document.profiles.full_name}</strong><span>{document.profiles.professional_category || 'Provider'} · {document.profiles.email || 'No email'}</span><small>{document.document_type.replace(/_/g, ' ')} · {document.file_name}</small></div></div><div className="verification-item-actions">{document.signed_url && <a href={document.signed_url} target="_blank" rel="noreferrer">View document</a>}<button className="verification-approve" type="button" onClick={() => void reviewDocument(document, 'APPROVED')}><ShieldCheck size={14} /> Approve</button><button className="verification-reject" type="button" onClick={() => void reviewDocument(document, 'REJECTED')}>Reject</button></div></article>)}</div>}
+                      </div>
                     )}
                   </div>
                   <button
@@ -1153,12 +1327,12 @@ function App() {
                   </>}
                 </section>
               )}
+              {accountWorkspace !== 'academy' && <>
               {notice && (!isAuthenticated || !isProvider) && (
                 <div className="notice">
                   <Sparkles size={16} />
                   <span>
-                    <strong>Welcome back, {accountName.split(' ')[0]}.</strong> Your team has 12 new
-                    verified providers to explore.
+                    <strong>Welcome back, {accountName.split(' ')[0]}.</strong> Your team has {listedProviders.length} verified provider{listedProviders.length === 1 ? '' : 's'} to explore.
                   </span>
                   <button
                     onClick={() => setNotice(false)}
@@ -1214,7 +1388,7 @@ function App() {
               <section className="marketplace-layout" id="service-grid">
                 <div className="service-grid">
                   {filteredServices.map((service) => (
-                    <article className="service-card" key={service.name}>
+                    <article className="service-card" key={service.name} onClick={() => setSelectedProvider(service)} tabIndex={0} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') setSelectedProvider(service) }}>
                       <div className="service-image">
                         <img
                           src={service.image}
@@ -1229,7 +1403,7 @@ function App() {
                               ? 'favorite active'
                               : 'favorite'
                           }
-                          onClick={() => toggleFavorite(service.name)}
+                          onClick={(event) => { event.stopPropagation(); toggleFavorite(service.name) }}
                           aria-label={`Save ${service.name}`}
                         >
                           <Heart
@@ -1270,42 +1444,45 @@ function App() {
                 <aside className="activity-panel">
                   <div className="panel-heading">
                     <div>
-                      <p className="eyebrow">Your workspace</p>
-                      <h2>Keep things moving</h2>
+                      <p className="eyebrow">{currentRole === 'administrator' || currentRole === 'assessor' ? 'Operations workspace' : 'Your workspace'}</p>
+                      <h2>{currentRole === 'administrator' || currentRole === 'assessor' ? 'Review and support providers' : 'Keep things moving'}</h2>
                     </div>
                     <button className="icon-button">
                       <ChevronRight size={18} />
                     </button>
                   </div>
+                  {currentRole === 'administrator' || currentRole === 'assessor' ? <>
+                    <div className="activity-item">
+                      <div className="activity-icon coral"><UsersRound size={17} /></div>
+                      <div><strong>12 pending providers to review</strong><span>New profiles are waiting for verification</span></div>
+                      <ChevronRight size={16} />
+                    </div>
+                    <div className="activity-item">
+                      <div className="activity-icon teal"><FileCheck2 size={17} /></div>
+                      <div><strong>8 documents need review</strong><span>Check identity and conduct certificates</span></div>
+                      <ChevronRight size={16} />
+                    </div>
+                  </> : <>
                   <div className="activity-item">
-                    <div className="activity-icon coral">
-                      <UsersRound size={17} />
-                    </div>
-                    <div>
-                      <strong>12 providers to review</strong>
-                      <span>New profiles are waiting</span>
-                    </div>
+                    <div className="activity-icon coral"><UsersRound size={17} /></div>
+                    <div><strong>{effectiveRole === 'provider' ? '3 opportunities to explore' : '12 providers to review'}</strong><span>{effectiveRole === 'provider' ? 'Matches for your skills are waiting' : 'New profiles are waiting'}</span></div>
                     <ChevronRight size={16} />
                   </div>
                   <div className="activity-item">
-                    <div className="activity-icon teal">
-                      <BriefcaseBusiness size={17} />
-                    </div>
-                    <div>
-                      <strong>4 open requests</strong>
-                      <span>One needs your attention</span>
-                    </div>
+                    <div className="activity-icon teal"><BriefcaseBusiness size={17} /></div>
+                    <div><strong>{effectiveRole === 'provider' ? '1 upcoming interview' : '4 open requests'}</strong><span>{effectiveRole === 'provider' ? 'Prepare for your next conversation' : 'One needs your attention'}</span></div>
                     <ChevronRight size={16} />
                   </div>
+                  </>}
                   <div className="academy-strip">
                     <div className="academy-icon">
                       <Sparkles size={17} />
                     </div>
                     <div>
                       <p>DEZHUB ACADEMY</p>
-                      <strong>8 learners are in progress</strong>
-                      <button id="academy">
-                        Open academy <ChevronRight size={14} />
+                      <strong>{currentRole === 'administrator' || currentRole === 'assessor' ? '8 learners are in progress' : effectiveRole === 'provider' ? 'Continue your training' : 'Explore trusted providers'}</strong>
+                      <button id="academy" onClick={() => isAuthenticated ? openAccountWorkspace('academy') : setAuthOpen(true)}>
+                        Open popular courses <ChevronRight size={14} />
                       </button>
                     </div>
                   </div>
@@ -1322,10 +1499,11 @@ function App() {
                   or “driver”.
                 </div>
               )}
+              </>}
             </div>
             <footer className="site-footer">
               <div className="footer-inner">
-                <div className="footer-cta">
+                {!isAuthenticated && <div className="footer-cta">
                   <div>
                     <p className="eyebrow">Have a skill to share?</p>
                     <h2>
@@ -1345,7 +1523,7 @@ function App() {
                   >
                     Become a provider <ChevronRight size={16} />
                   </button>
-                </div>
+                </div>}
                 <div className="footer-links">
                   <div className="footer-brand">
                     <a className="brand-mark" href="#top">

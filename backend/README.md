@@ -20,6 +20,7 @@ Apply the migrations in `../supabase/migrations/` in filename order in the Supab
 - `POST /v1/roles` administrator-only, with `{ "userId": "...", "role": "provider|client|assessor|administrator" }`
 - `POST /v1/staff/invitations` administrator-only, with `{ "email": "...", "role": "assessor|administrator" }`; sends or resends an invitation for an unconfirmed user and records an audit event
 - `POST /v1/profiles` with an authenticated bearer token and `{ "fullName": "...", "accountType": "client|provider" }`
+- `GET /v1/providers` returns providers with at least one approved document, including their KSh rate and rate period
 
 Public signup accepts only `client` and `provider`. Assessor and administrator roles must be assigned by an existing administrator through `POST /v1/roles` or directly by a controlled database operation.
 
