@@ -234,15 +234,17 @@ function App() {
     'signin' | 'register' | 'forgot' | 'reset' | 'phone' | 'otp'
   >(window.location.pathname === '/reset-password' ? 'reset' : 'signin')
   const [accountType, setAccountType] = useState<AccountType>('client')
+  const [roleSelected, setRoleSelected] = useState(false)
   const [currentRole, setCurrentRole] = useState<AppRole | null>(null)
   const [authMessage, setAuthMessage] = useState('')
   const [phoneNumber, setPhoneNumber] = useState('')
   const [isAuthenticated, setIsAuthenticated] = useState(false)
+  const [notificationsOpen, setNotificationsOpen] = useState(false)
   const [accountMenuOpen, setAccountMenuOpen] = useState(false)
   const [accountName, setAccountName] = useState('Your Dezhub account')
   const [accountWorkspace, setAccountWorkspace] =
     useState<AccountWorkspace | null>(null)
-  const [currentPage, setCurrentPage] = useState(
+  const [currentPage, setCurrentPage] = useState<'home' | 'profile' | 'dashboard'>(
     window.location.pathname === '/profile' ? 'profile' : 'home',
   )
   const [profileDetails, setProfileDetails] = useState<ProfileDetails>({
@@ -275,10 +277,69 @@ function App() {
   const [staffEmail, setStaffEmail] = useState('')
   const [staffRole, setStaffRole] = useState<'assessor' | 'administrator'>('assessor')
   const [staffMessage, setStaffMessage] = useState('')
+  const [profilePromptVisible, setProfilePromptVisible] = useState(false)
+  const [profileCompletionNeeded, setProfileCompletionNeeded] = useState(false)
   const [profilePhoto, setProfilePhoto] = useState<File | null>(null)
+  const [profilePhotoUrl, setProfilePhotoUrl] = useState('')
   const [documentFiles, setDocumentFiles] = useState<Record<string, File | null>>({})
   const effectiveRole = currentRole ?? accountType
   const isProvider = effectiveRole === 'provider'
+  const loadProfilePhoto = async (path: string | null | undefined) => {
+    if (!path || !supabase) return
+    const { data } = await supabase.storage
+      .from('provider-documents')
+      .createSignedUrl(path, 3600)
+    if (data?.signedUrl) setProfilePhotoUrl(data.signedUrl)
+  }
+  const loadSavedProfile = async (userId: string) => {
+    if (!supabase) return
+    const { data: profile } = await supabase
+      .from('profiles')
+      .select('full_name,location,bio,avatar_url,date_of_birth,gender,nationality,phone_number,national_id,emergency_contact,next_of_kin_name,next_of_kin_relationship,next_of_kin_phone,alternative_contact,professional_category,education,previous_employers,previous_job_locations,availability,salary_expectation,languages,professional_skills,preferred_work_location,experience_years,references')
+      .eq('id', userId)
+      .maybeSingle()
+    if (!profile) return
+    setProfileDetails({
+      fullName: profile.full_name ?? '', location: profile.location ?? '', bio: profile.bio ?? '',
+      dateOfBirth: profile.date_of_birth ?? '', gender: profile.gender ?? '', nationality: profile.nationality ?? '',
+      phoneNumber: profile.phone_number ?? '', nationalId: profile.national_id ?? '', emergencyContact: profile.emergency_contact ?? '',
+      nextOfKinName: profile.next_of_kin_name ?? '', nextOfKinRelationship: profile.next_of_kin_relationship ?? '', nextOfKinPhone: profile.next_of_kin_phone ?? '', alternativeContact: profile.alternative_contact ?? '',
+      professionalCategory: profile.professional_category ?? '', education: profile.education ?? '', previousEmployers: profile.previous_employers ?? '', previousJobLocations: profile.previous_job_locations ?? '',
+      availability: profile.availability ?? '', salaryExpectation: profile.salary_expectation ?? '', languages: profile.languages ?? '', professionalSkills: profile.professional_skills ?? '', preferredWorkLocation: profile.preferred_work_location ?? '',
+      experienceYears: profile.experience_years?.toString() ?? '', references: profile.references ?? '',
+    })
+    void loadProfilePhoto(profile.avatar_url)
+  }
+  const requiredProfileFields = [
+    ['Full name', profileDetails.fullName],
+    ['Date of birth', profileDetails.dateOfBirth],
+    ['Nationality', profileDetails.nationality],
+    ['Phone number', profileDetails.phoneNumber],
+    ['National ID or passport number', profileDetails.nationalId],
+    ['Next-of-kin name', profileDetails.nextOfKinName],
+    ['Next-of-kin relationship', profileDetails.nextOfKinRelationship],
+    ['Next-of-kin phone number', profileDetails.nextOfKinPhone],
+    ['Professional category', profileDetails.professionalCategory],
+    ['Education', profileDetails.education],
+    ['Professional skills', profileDetails.professionalSkills],
+    ['Preferred work location', profileDetails.preferredWorkLocation],
+    ['Availability', profileDetails.availability],
+    ['Years of experience', profileDetails.experienceYears],
+    ['Languages', profileDetails.languages],
+    ['Expected salary', profileDetails.salaryExpectation],
+    ['Professional references', profileDetails.references],
+  ] as const
+  const missingProfileFields = requiredProfileFields
+    .filter(([, value]) => String(value).trim().length === 0)
+    .map(([label]) => label)
+  const profileFieldsComplete = missingProfileFields.length === 0
+  const journeyPercent = profileFieldsComplete ? 75 : 50
+  const openProfileCompletion = () => {
+    window.history.pushState({}, '', '/profile')
+    setCurrentPage('profile')
+    setProfilePromptVisible(false)
+    setNotificationsOpen(false)
+  }
   const filteredServices = services.filter(
     (service) =>
       `${service.name} ${service.role} ${service.location}`
@@ -302,6 +363,10 @@ function App() {
       setAuthOpen(true)
     }
   }
+  const choosePublicRole = (role: AccountType) => {
+    setAccountType(role)
+    setRoleSelected(true)
+  }
   const signOut = async () => {
     await supabase?.auth.signOut()
     setAccountMenuOpen(false)
@@ -316,6 +381,7 @@ function App() {
     }
     setAccountWorkspace(workspace)
     setAccountMenuOpen(false)
+    setCurrentPage(workspace === 'dashboard' ? 'dashboard' : 'home')
     window.setTimeout(() =>
       document
         .getElementById('account-workspace')
@@ -325,6 +391,7 @@ function App() {
   const goHome = () => {
     window.history.pushState({}, '', '/')
     setCurrentPage('home')
+    setAccountWorkspace(null)
   }
   const inviteStaff = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault()
@@ -346,6 +413,10 @@ function App() {
       setProfileMessage('Add your Supabase keys to save your profile.')
       return
     }
+    if ((authMode === 'register' || authMode === 'phone') && !roleSelected) {
+      setAuthMessage('Choose whether you need help or provide services before continuing.')
+      return
+    }
     const { data: userData, error: userError } = await supabase.auth.getUser()
     const user = userData.user
     if (userError || !user) {
@@ -356,12 +427,17 @@ function App() {
       setProfileMessage('Please add your full name.')
       return
     }
+    if (isProvider && !profileFieldsComplete) {
+      setProfileMessage(`Please complete: ${missingProfileFields.join(', ')}.`)
+      return
+    }
     let avatarUrl: string | null = null
     if (profilePhoto) {
       const path = `${user.id}/profile-${Date.now()}-${profilePhoto.name}`
       const upload = await supabase.storage.from('provider-documents').upload(path, profilePhoto, { upsert: false })
       if (upload.error) { setProfileMessage(`Profile photo upload failed: ${upload.error.message}`); return }
       avatarUrl = path
+      setProfilePhotoUrl(URL.createObjectURL(profilePhoto))
     }
     const { error } = await supabase.from('profiles').upsert(
       {
@@ -412,9 +488,15 @@ function App() {
       if (record.error) { setProfileMessage(`Document record failed: ${record.error.message}`); return }
     }
     setAccountName(profileDetails.fullName.trim())
+    setProfileCompletionNeeded([profileDetails.fullName, profileDetails.dateOfBirth, profileDetails.nationality, profileDetails.phoneNumber, profileDetails.nationalId, profileDetails.nextOfKinName, profileDetails.nextOfKinRelationship, profileDetails.nextOfKinPhone, profileDetails.professionalCategory, profileDetails.education, profileDetails.experienceYears, profileDetails.languages, profileDetails.professionalSkills, profileDetails.availability, profileDetails.preferredWorkLocation, profileDetails.salaryExpectation, profileDetails.references].some((value) => !value))
+    setProfilePromptVisible(false)
     setProfileMessage(pendingDocuments.length ? 'Your profile and documents have been submitted for review.' : 'Your profile has been saved.')
   }
   const continueWithGoogle = async () => {
+    if (authMode === 'register' && !roleSelected) {
+      setAuthMessage('Choose whether you need help or provide services before continuing.')
+      return
+    }
     if (!supabase) {
       setAuthMessage(
         'Add your Supabase keys to .env.local to enable Google sign-in.',
@@ -434,8 +516,16 @@ function App() {
     auth.auth.getSession().then(({ data }) => {
       const user = data.session?.user
       if (user) {
-        void auth.from('user_roles').select('role').eq('user_id', user.id).maybeSingle().then(({ data: roleData }) => {
+        void loadSavedProfile(user.id)
+        void auth.from('user_roles').select('role').eq('user_id', user.id).maybeSingle().then(async ({ data: roleData }) => {
           if (roleData?.role) setCurrentRole(roleData.role as AppRole)
+          if (roleData?.role === 'provider') {
+            const { data: profile } = await auth.from('profiles').select('avatar_url,full_name,date_of_birth,nationality,phone_number,national_id,next_of_kin_name,next_of_kin_relationship,next_of_kin_phone,professional_category,education,experience_years,languages,professional_skills,availability,preferred_work_location,salary_expectation,references').eq('id', user.id).maybeSingle()
+            void loadProfilePhoto(profile?.avatar_url)
+            const incomplete = !profile || [profile.full_name, profile.date_of_birth, profile.nationality, profile.phone_number, profile.national_id, profile.next_of_kin_name, profile.next_of_kin_relationship, profile.next_of_kin_phone, profile.professional_category, profile.education, profile.experience_years, profile.languages, profile.professional_skills, profile.availability, profile.preferred_work_location, profile.salary_expectation, profile.references].some((value) => !value)
+            setProfileCompletionNeeded(incomplete)
+            setProfilePromptVisible(incomplete)
+          }
         })
       } else {
         setCurrentRole(null)
@@ -494,11 +584,24 @@ function App() {
         }
         const user = session?.user
         if (user) {
+          void loadSavedProfile(user.id)
           void auth.from('user_roles').select('role').eq('user_id', user.id).maybeSingle().then(({ data: roleData }) => {
             setCurrentRole((roleData?.role as AppRole | undefined) ?? null)
+            if (roleData?.role === 'provider') {
+              void auth.from('profiles').select('avatar_url,full_name,date_of_birth,nationality,phone_number,national_id,next_of_kin_name,next_of_kin_relationship,next_of_kin_phone,professional_category,education,experience_years,languages,professional_skills,availability,preferred_work_location,salary_expectation,references').eq('id', user.id).maybeSingle().then(({ data: profile }) => {
+                void loadProfilePhoto(profile?.avatar_url)
+                const incomplete = !profile || [profile.full_name, profile.date_of_birth, profile.nationality, profile.phone_number, profile.national_id, profile.next_of_kin_name, profile.next_of_kin_relationship, profile.next_of_kin_phone, profile.professional_category, profile.education, profile.experience_years, profile.languages, profile.professional_skills, profile.availability, profile.preferred_work_location, profile.salary_expectation, profile.references].some((value) => !value)
+                setProfileCompletionNeeded(incomplete)
+                setProfilePromptVisible(incomplete)
+              })
+            } else {
+              setProfileCompletionNeeded(false)
+            }
           })
         } else {
           setCurrentRole(null)
+          setProfileCompletionNeeded(false)
+          setProfilePromptVisible(false)
         }
         setIsAuthenticated(Boolean(user))
         setAccountName(
@@ -636,18 +739,18 @@ function App() {
           >
             {menuOpen ? <X size={21} /> : <Menu size={21} />}
           </button>
-          <a className="brand-mark" href="#top">
+          <a className="brand-mark" href="/" onClick={(event) => { event.preventDefault(); goHome() }}>
             <span>de</span>zhub<span className="brand-dot">.</span>
           </a>
           <nav
             className={menuOpen ? 'main-nav nav-open' : 'main-nav'}
             aria-label="Main navigation"
           >
-            <a className="active" href="#browse">
+            <a className={currentPage === 'home' ? 'active' : ''} href="/" onClick={(event) => { event.preventDefault(); goHome() }}>
               Browse services
             </a>
-            <a href="#how-it-works">How it works</a>
-            <a href="#academy">Dezhub Academy</a>
+            <a href="/" onClick={(event) => { event.preventDefault(); goHome() }}>How it works</a>
+            <a href={isAuthenticated ? '/academy' : '/'} onClick={(event) => { event.preventDefault(); isAuthenticated ? openAccountWorkspace('academy') : goHome() }}>Dezhub Academy</a>
           </nav>
           <div className="header-actions">
             <button
@@ -655,15 +758,30 @@ function App() {
               onClick={() => {
                 setAuthMode('register')
                 setAccountType('provider')
+                setRoleSelected(true)
                 setAuthOpen(true)
               }}
             >
               Become a provider
             </button>
-            <button className="icon-button" aria-label="Notifications">
+            <div className="notifications-wrap">
+            <button className="icon-button" aria-label="Notifications" aria-expanded={notificationsOpen} onClick={() => setNotificationsOpen((open) => !open)}>
               <Bell size={19} />
-              <i />
+              {isAuthenticated && isProvider && profileCompletionNeeded && <i />}
             </button>
+            {notificationsOpen && (
+              <div className="notifications-menu" role="dialog" aria-label="Notifications">
+                <div className="notifications-heading"><strong>Notifications</strong><span>{isAuthenticated && isProvider && profileCompletionNeeded ? '1 unread' : 'All caught up'}</span></div>
+                {isAuthenticated && isProvider && profileCompletionNeeded ? (
+                  <button className="notification-item" onClick={openProfileCompletion}>
+                    <span className="notification-icon"><CircleUserRound size={16} /></span>
+                    <span><strong>Complete your profile</strong><small>Add your details and documents to unlock more account features.</small></span>
+                    <ChevronRight size={15} />
+                  </button>
+                ) : <p className="notifications-empty">You have no new notifications.</p>}
+              </div>
+            )}
+            </div>
             <div className="account-menu-wrap">
               <button
                 className="account-button"
@@ -686,7 +804,7 @@ function App() {
                     onClick={() => openAccountWorkspace('profile')}
                   >
                     <span className="account-avatar">
-                      {accountName.charAt(0).toUpperCase()}
+                      {profilePhotoUrl ? <img src={profilePhotoUrl} alt="" /> : accountName.charAt(0).toUpperCase()}
                     </span>
                     <span>
                       <strong>{accountName}</strong>
@@ -753,7 +871,7 @@ function App() {
           </div>
         </div>
       </header>
-      <main id="top">
+      <main id="top" className={currentPage === 'dashboard' ? 'dashboard-mode' : undefined}>
         {currentPage === 'profile' ? (
           <section className="profile-page">
             <div className="profile-page-inner">
@@ -762,7 +880,7 @@ function App() {
               </button>
               <div className="profile-page-heading">
                 <div className="profile-page-avatar">
-                  {accountName.charAt(0).toUpperCase()}
+                  {profilePhotoUrl ? <img src={profilePhotoUrl} alt="" /> : accountName.charAt(0).toUpperCase()}
                 </div>
                 <div>
                   <p className="eyebrow">My account</p>
@@ -776,30 +894,21 @@ function App() {
               <div className="profile-layout">
                 <aside className="profile-nav" aria-label="Profile navigation">
                   <strong>Account</strong>
-                  <button className="active">
+                  <button className="active" onClick={() => openAccountWorkspace('profile')}>
                     <CircleUserRound size={16} /> Profile
                   </button>
                   <button
-                    onClick={() => {
-                      goHome()
-                      openAccountWorkspace('settings')
-                    }}
+                    onClick={() => openAccountWorkspace('settings')}
                   >
                     <Settings size={16} /> Settings
                   </button>
                   <button
-                    onClick={() => {
-                      goHome()
-                      openAccountWorkspace('payments')
-                    }}
+                    onClick={() => openAccountWorkspace('payments')}
                   >
                     <CreditCard size={16} /> Payments and billing
                   </button>
                   <button
-                    onClick={() => {
-                      goHome()
-                      openAccountWorkspace('help')
-                    }}
+                    onClick={() => openAccountWorkspace('help')}
                   >
                     <CircleHelp size={16} /> Help centre
                   </button>
@@ -834,6 +943,7 @@ function App() {
                         }))
                       }
                       placeholder="Your full name"
+                      required
                     />
                   </label>
                   <label>
@@ -852,26 +962,27 @@ function App() {
                   {isProvider && (
                     <div className="provider-fields">
                       <div className="profile-field-grid">
-                        <label>Date of birth<input type="date" value={profileDetails.dateOfBirth} onChange={(event) => setProfileDetails((details) => ({ ...details, dateOfBirth: event.target.value }))} /></label>
+                        <label>Date of birth<input type="date" value={profileDetails.dateOfBirth} onChange={(event) => setProfileDetails((details) => ({ ...details, dateOfBirth: event.target.value }))} required /></label>
                         <label>Gender<select value={profileDetails.gender} onChange={(event) => setProfileDetails((details) => ({ ...details, gender: event.target.value }))}><option value="">Select gender</option><option>Female</option><option>Male</option><option>Prefer not to say</option></select></label>
                       </div>
                       <div className="profile-field-grid">
-                        <label>Nationality<input value={profileDetails.nationality} onChange={(event) => setProfileDetails((details) => ({ ...details, nationality: event.target.value }))} placeholder="e.g. Kenyan" /></label>
-                        <label>Phone number<input type="tel" value={profileDetails.phoneNumber} onChange={(event) => setProfileDetails((details) => ({ ...details, phoneNumber: event.target.value }))} placeholder="+254..." /></label>
+                        <label>Nationality<input value={profileDetails.nationality} onChange={(event) => setProfileDetails((details) => ({ ...details, nationality: event.target.value }))} placeholder="e.g. Kenyan" required /></label>
+                        <label>Phone number<input type="tel" value={profileDetails.phoneNumber} onChange={(event) => setProfileDetails((details) => ({ ...details, phoneNumber: event.target.value }))} placeholder="+254..." required /></label>
                       </div>
-                      <label>National ID or passport number<input value={profileDetails.nationalId} onChange={(event) => setProfileDetails((details) => ({ ...details, nationalId: event.target.value }))} placeholder="Enter your document number" /></label>
+                      <label>National ID or passport number<input value={profileDetails.nationalId} onChange={(event) => setProfileDetails((details) => ({ ...details, nationalId: event.target.value }))} placeholder="Enter your document number" required /></label>
                       <h3 className="profile-section-title">Next of kin</h3>
-                      <div className="profile-field-grid"><label>Name<input value={profileDetails.nextOfKinName} onChange={(event) => setProfileDetails((details) => ({ ...details, nextOfKinName: event.target.value }))} /></label><label>Relationship<input value={profileDetails.nextOfKinRelationship} onChange={(event) => setProfileDetails((details) => ({ ...details, nextOfKinRelationship: event.target.value }))} placeholder="e.g. Sister" /></label></div>
-                      <div className="profile-field-grid"><label>Phone number<input value={profileDetails.nextOfKinPhone} onChange={(event) => setProfileDetails((details) => ({ ...details, nextOfKinPhone: event.target.value }))} /></label><label>Alternative contact<input value={profileDetails.alternativeContact} onChange={(event) => setProfileDetails((details) => ({ ...details, alternativeContact: event.target.value }))} /></label></div>
+                      <div className="profile-field-grid"><label>Name<input value={profileDetails.nextOfKinName} onChange={(event) => setProfileDetails((details) => ({ ...details, nextOfKinName: event.target.value }))} required /></label><label>Relationship<input value={profileDetails.nextOfKinRelationship} onChange={(event) => setProfileDetails((details) => ({ ...details, nextOfKinRelationship: event.target.value }))} placeholder="e.g. Sister" required /></label></div>
+                      <div className="profile-field-grid"><label>Phone number<input value={profileDetails.nextOfKinPhone} onChange={(event) => setProfileDetails((details) => ({ ...details, nextOfKinPhone: event.target.value }))} required /></label><label>Alternative contact<input value={profileDetails.alternativeContact} onChange={(event) => setProfileDetails((details) => ({ ...details, alternativeContact: event.target.value }))} /></label></div>
                       <h3 className="profile-section-title">Professional history</h3>
-                      <label>Education<input value={profileDetails.education} onChange={(event) => setProfileDetails((details) => ({ ...details, education: event.target.value }))} placeholder="Highest education or training" /></label>
+                      <label>Professional category<input value={profileDetails.professionalCategory} onChange={(event) => setProfileDetails((details) => ({ ...details, professionalCategory: event.target.value }))} placeholder="e.g. Nanny, housekeeper, driver" required /></label>
+                      <label>Education<input value={profileDetails.education} onChange={(event) => setProfileDetails((details) => ({ ...details, education: event.target.value }))} placeholder="Highest education or training" required /></label>
                       <div className="profile-field-grid"><label>Previous employers<textarea rows={3} value={profileDetails.previousEmployers} onChange={(event) => setProfileDetails((details) => ({ ...details, previousEmployers: event.target.value }))} placeholder="Employer, role, and dates" /></label><label>Previous job locations<textarea rows={3} value={profileDetails.previousJobLocations} onChange={(event) => setProfileDetails((details) => ({ ...details, previousJobLocations: event.target.value }))} placeholder="Cities or countries" /></label></div>
-                      <label>Professional skills<input value={profileDetails.professionalSkills} onChange={(event) => setProfileDetails((details) => ({ ...details, professionalSkills: event.target.value }))} placeholder="e.g. newborn care, cooking, first aid" /></label>
-                      <label>Preferred work location<input value={profileDetails.preferredWorkLocation} onChange={(event) => setProfileDetails((details) => ({ ...details, preferredWorkLocation: event.target.value }))} placeholder="Where would you like to work?" /></label>
-                      <div className="profile-field-grid"><label>Availability<input value={profileDetails.availability} onChange={(event) => setProfileDetails((details) => ({ ...details, availability: event.target.value }))} placeholder="e.g. Full-time, weekdays" /></label><label>Years of experience<input type="number" min="0" max="60" value={profileDetails.experienceYears} onChange={(event) => setProfileDetails((details) => ({ ...details, experienceYears: event.target.value }))} placeholder="e.g. 5" /></label></div>
-                      <div className="profile-field-grid"><label>Languages<input value={profileDetails.languages} onChange={(event) => setProfileDetails((details) => ({ ...details, languages: event.target.value }))} placeholder="e.g. English, Swahili" /></label><label>Expected salary<input value={profileDetails.salaryExpectation} onChange={(event) => setProfileDetails((details) => ({ ...details, salaryExpectation: event.target.value }))} placeholder="e.g. $600 per month" /></label></div>
-                      <label>Professional references<textarea rows={4} value={profileDetails.references} onChange={(event) => setProfileDetails((details) => ({ ...details, references: event.target.value }))} placeholder="Names, roles, and contact details" /></label>
-                      <label className="file-input">Profile photo<input type="file" accept="image/*" onChange={(event) => setProfilePhoto(event.target.files?.[0] ?? null)} /></label>
+                      <label>Professional skills<input value={profileDetails.professionalSkills} onChange={(event) => setProfileDetails((details) => ({ ...details, professionalSkills: event.target.value }))} placeholder="e.g. newborn care, cooking, first aid" required /></label>
+                      <label>Preferred work location<input value={profileDetails.preferredWorkLocation} onChange={(event) => setProfileDetails((details) => ({ ...details, preferredWorkLocation: event.target.value }))} placeholder="Where would you like to work?" required /></label>
+                      <div className="profile-field-grid"><label>Availability<input value={profileDetails.availability} onChange={(event) => setProfileDetails((details) => ({ ...details, availability: event.target.value }))} placeholder="e.g. Full-time, weekdays" required /></label><label>Years of experience<input type="number" min="0" max="60" value={profileDetails.experienceYears} onChange={(event) => setProfileDetails((details) => ({ ...details, experienceYears: event.target.value }))} placeholder="e.g. 5" required /></label></div>
+                      <div className="profile-field-grid"><label>Languages<input value={profileDetails.languages} onChange={(event) => setProfileDetails((details) => ({ ...details, languages: event.target.value }))} placeholder="e.g. English, Swahili" required /></label><label>Expected salary<input value={profileDetails.salaryExpectation} onChange={(event) => setProfileDetails((details) => ({ ...details, salaryExpectation: event.target.value }))} placeholder="e.g. $600 per month" required /></label></div>
+                      <label>Professional references<textarea rows={4} value={profileDetails.references} onChange={(event) => setProfileDetails((details) => ({ ...details, references: event.target.value }))} placeholder="Names, roles, and contact details" required /></label>
+                      <label className="file-input">Profile photo<input type="file" accept="image/*" onChange={(event) => { const file = event.target.files?.[0] ?? null; setProfilePhoto(file); if (file) setProfilePhotoUrl(URL.createObjectURL(file)) }} /></label>
                       <div className="document-upload"><strong>Required documents</strong><span>Upload clear copies. Each document starts as pending review.</span>{providerDocumentTypes.map((document) => <label className="file-input" key={document.key}>{document.label}<input type="file" accept={document.accept} multiple={document.key === 'supporting'} onChange={(event) => setDocumentFiles((files) => ({ ...files, [document.key]: event.target.files?.[0] ?? null }))} /></label>)}</div>
                     </div>
                   )}
@@ -956,15 +1067,73 @@ function App() {
                   id="account-workspace"
                   aria-live="polite"
                 >
+                  {accountWorkspace === 'dashboard' && isProvider ? (
+                    <div className="provider-dashboard">
+                      <div className="provider-dashboard-heading">
+                        <div>
+                          <p className="eyebrow">Your professional workspace</p>
+                          <h1>Good morning, {accountName.split(' ')[0]}.</h1>
+                          <p>Keep building your profile, skills, and opportunities on Dezhub.</p>
+                        </div>
+                        <div className="provider-dashboard-avatar">
+                          {profilePhotoUrl ? <img src={profilePhotoUrl} alt="" /> : accountName.charAt(0).toUpperCase()}
+                        </div>
+                      </div>
+                      <section className="journey-panel" aria-labelledby="journey-title">
+                        <div className="journey-heading"><div><p className="eyebrow">Your Dezhub journey</p><h2 id="journey-title">A few steps closer to your next opportunity</h2></div><strong>{journeyPercent}% <span>complete</span></strong></div>
+                        <div className="journey-progress"><span style={{ width: `${journeyPercent}%` }} /></div>
+                        <div className="journey-steps"><span className="journey-step done">✓ Account</span><span className="journey-step done">✓ Email</span><span className={profileFieldsComplete ? 'journey-step done' : 'journey-step'}>{profileFieldsComplete ? '✓' : '○'} Profile</span><span className="journey-step">○ Documents</span></div>
+                        <div className="next-step"><div><p className="eyebrow">Next step</p><strong>{profileFieldsComplete ? 'Upload your verification documents' : 'Complete your professional profile'}</strong></div><button className="dashboard-primary" onClick={openProfileCompletion}>Continue <ChevronRight size={15} /></button></div>
+                      </section>
+                      <div className="dashboard-two-column">
+                        <section className="dashboard-card"><div className="dashboard-card-heading"><p className="eyebrow">Your profile</p><CircleUserRound size={18} /></div><div className="dashboard-profile-summary"><div className="dashboard-profile-photo">{profilePhotoUrl ? <img src={profilePhotoUrl} alt="" /> : accountName.charAt(0).toUpperCase()}</div><div><strong>{accountName}</strong><span>{profileDetails.professionalCategory || 'Professional provider'}</span><span>{profileDetails.location || 'Add your location'}</span></div></div><button className="dashboard-link" onClick={() => openAccountWorkspace('profile')}>View profile <ChevronRight size={14} /></button></section>
+                        <section className="dashboard-card"><div className="dashboard-card-heading"><p className="eyebrow">Verification</p><ShieldCheck size={18} /></div><div className="verification-list"><span className="verification-done">✓ <b>Email</b></span><span className="verification-done">✓ <b>Phone</b></span><span className="verification-pending">⏳ <b>ID</b><small>Under review</small></span><span className="verification-open">○ <b>Good conduct</b></span></div><button className="dashboard-link" onClick={openProfileCompletion}>View documents <ChevronRight size={14} /></button></section>
+                      </div>
+                      <section className="dashboard-card dashboard-learning"><div><p className="eyebrow">Dezhub Academy</p><h2>Nanny training</h2><p>Strengthen your skills and prepare for your next assessment.</p><div className="learning-progress"><span /></div><small>80% complete</small><button className="dashboard-link" onClick={() => openAccountWorkspace('academy')}>Continue course <ChevronRight size={14} /></button></div><div className="assessment"><p className="eyebrow">Skills assessment</p><strong>Not completed</strong><button className="dashboard-primary">Start assessment <ChevronRight size={15} /></button></div></section>
+                      <section className="dashboard-card opportunities-card"><div className="dashboard-section-heading"><div><p className="eyebrow">Recommended opportunities</p><h2>Work that matches your profile</h2></div><button className="dashboard-link" onClick={() => openAccountWorkspace('opportunities')}>See all <ChevronRight size={14} /></button></div><div className="opportunity-row"><div><strong>Nanny</strong><span>Nairobi</span></div><b>94% match</b><button className="dashboard-link">View <ChevronRight size={14} /></button></div><div className="opportunity-row"><div><strong>Housekeeper</strong><span>Karen</span></div><b>88% match</b><button className="dashboard-link">View <ChevronRight size={14} /></button></div></section>
+                      <div className="dashboard-two-column"><section className="dashboard-card"><p className="eyebrow">Upcoming interview</p><h2>Nanny - Runda</h2><p>8 Sep · 10:00 AM</p><button className="dashboard-primary">View interview <ChevronRight size={15} /></button></section><section className="dashboard-card"><p className="eyebrow">Your certificates</p><h2>Nanny training</h2><p className="certificate-status">Not yet issued</p><button className="dashboard-link" onClick={() => openAccountWorkspace('certificates')}>View certificates <ChevronRight size={14} /></button></section></div>
+                    </div>
+                  ) : <>
                   <div className="account-workspace-icon">
                     <CircleUserRound size={22} />
                   </div>
                   <div>
-                    <p className="eyebrow">Account area</p>
                     <h2>{accountWorkspaceContent[accountWorkspace].title}</h2>
                     <p>
                       {accountWorkspaceContent[accountWorkspace].description}
                     </p>
+                    {accountWorkspace === 'dashboard' && isProvider && (
+                      <section className="onboarding-checklist" aria-labelledby="onboarding-title">
+                        <div className="onboarding-header">
+                          <div>
+                            <p className="eyebrow">New provider checklist</p>
+                            <h3 id="onboarding-title">Build a profile that gets noticed</h3>
+                            <p>Complete these steps to improve your chances of being matched with the right clients.</p>
+                          </div>
+                          <div className="onboarding-progress" aria-label={`${profileFieldsComplete ? 100 : 25}% complete`}>
+                            <strong>{profileFieldsComplete ? 100 : 25}%</strong>
+                            <span>complete</span>
+                          </div>
+                        </div>
+                        <div className="onboarding-tasks">
+                          <button className="onboarding-task task-complete" type="button">
+                            <span className="task-marker">✓</span><span><strong>Create your account</strong><small>Your Dezhub account is ready.</small></span>
+                          </button>
+                          <button className="onboarding-task task-complete" type="button">
+                            <span className="task-marker">✓</span><span><strong>Confirm your email address</strong><small>Your sign-in email is confirmed.</small></span>
+                          </button>
+                          <button className={profileFieldsComplete ? 'onboarding-task task-complete' : 'onboarding-task'} onClick={openProfileCompletion} type="button">
+                            <span className="task-marker">{profileFieldsComplete ? '✓' : ''}</span><span><strong>Complete your profile</strong><small>{profileFieldsComplete ? 'Your professional details are complete.' : 'Add your details so clients can find and trust you.'}</small></span><ChevronRight size={15} />
+                          </button>
+                          <button className="onboarding-task" onClick={() => openAccountWorkspace('opportunities')} type="button">
+                            <span className="task-marker" /><span><strong>Explore opportunities</strong><small>Find work that matches your skills and availability.</small></span><ChevronRight size={15} />
+                          </button>
+                          <button className="onboarding-task" onClick={() => openAccountWorkspace('academy')} type="button">
+                            <span className="task-marker" /><span><strong>Take a course at the Academy</strong><small>Learn best practices and prepare for assessment.</small></span><ChevronRight size={15} />
+                          </button>
+                        </div>
+                      </section>
+                    )}
                     {accountWorkspace === 'staff' && currentRole === 'administrator' && (
                       <form className="staff-invite-form" onSubmit={inviteStaff}>
                         <label>Staff email<input type="email" value={staffEmail} onChange={(event) => setStaffEmail(event.target.value)} placeholder="colleague@example.com" required /></label>
@@ -976,18 +1145,19 @@ function App() {
                   </div>
                   <button
                     className="account-workspace-close"
-                    onClick={() => setAccountWorkspace(null)}
+                    onClick={() => accountWorkspace === 'dashboard' ? goHome() : setAccountWorkspace(null)}
                     aria-label="Close account area"
                   >
                     <X size={18} />
                   </button>
+                  </>}
                 </section>
               )}
-              {notice && (
+              {notice && (!isAuthenticated || !isProvider) && (
                 <div className="notice">
                   <Sparkles size={16} />
                   <span>
-                    <strong>Welcome back, Joy.</strong> Your team has 12 new
+                    <strong>Welcome back, {accountName.split(' ')[0]}.</strong> Your team has 12 new
                     verified providers to explore.
                   </span>
                   <button
@@ -996,6 +1166,14 @@ function App() {
                   >
                     <X size={16} />
                   </button>
+                </div>
+              )}
+              {isAuthenticated && isProvider && profilePromptVisible && (
+                <div className="profile-completion-notice" role="status">
+                  <div className="profile-completion-icon"><CircleUserRound size={18} /></div>
+                  <div><strong>Complete your profile to unlock more account features.</strong><span>Add your professional details and documents so Dezhub can verify and match you.</span></div>
+                  <button className="profile-completion-action" onClick={openProfileCompletion}>Unlock more features <ChevronRight size={15} /></button>
+                  <button className="profile-completion-dismiss" onClick={() => setProfilePromptVisible(false)} aria-label="Dismiss profile completion notice"><X size={16} /></button>
                 </div>
               )}
               <section className="category-bar" aria-label="Service categories">
@@ -1161,6 +1339,7 @@ function App() {
                     onClick={() => {
                       setAuthMode('register')
                       setAccountType('provider')
+                      setRoleSelected(true)
                       setAuthOpen(true)
                     }}
                   >
@@ -1260,15 +1439,16 @@ function App() {
                       : 'Sign in to manage your requests and placements.'}
               </p>
               {(authMode === 'register' || authMode === 'phone') && (
-                <div className="account-types">
+                <div className="account-types" aria-label="Choose your account type">
+                  <p className="account-type-label">Choose your account type</p>
                   <button
                     type="button"
                     className={
-                      accountType === 'client'
+                      roleSelected && accountType === 'client'
                         ? 'type-button active'
                         : 'type-button'
                     }
-                    onClick={() => setAccountType('client')}
+                    onClick={() => choosePublicRole('client')}
                   >
                     <strong>I need help</strong>
                     <span>Find trusted professionals</span>
@@ -1276,11 +1456,11 @@ function App() {
                   <button
                     type="button"
                     className={
-                      accountType === 'provider'
+                      roleSelected && accountType === 'provider'
                         ? 'type-button active'
                         : 'type-button'
                     }
-                    onClick={() => setAccountType('provider')}
+                    onClick={() => choosePublicRole('provider')}
                   >
                     <strong>I provide services</strong>
                     <span>Grow your work with Dezhub</span>

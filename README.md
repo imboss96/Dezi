@@ -158,6 +158,8 @@ Open **Supabase Dashboard → SQL Editor → New query**. Run these files in ord
 005_provider_registration_fields.sql
 006_user_roles_and_staff.sql
 007_staff_invitations_and_audit.sql
+008_profile_availability_fix.sql
+009_complete_profile_columns.sql
 ```
 
 The migrations create the profile, provider fields, private document storage, server-side roles, signup trigger, audit logs, and security policies.

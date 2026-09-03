@@ -1,0 +1,27 @@
+alter table public.profiles
+  add column if not exists location text,
+  add column if not exists bio text,
+  add column if not exists avatar_url text,
+  add column if not exists date_of_birth date,
+  add column if not exists gender text,
+  add column if not exists nationality text,
+  add column if not exists phone_number text,
+  add column if not exists national_id text,
+  add column if not exists emergency_contact text,
+  add column if not exists next_of_kin_name text,
+  add column if not exists next_of_kin_relationship text,
+  add column if not exists next_of_kin_phone text,
+  add column if not exists alternative_contact text,
+  add column if not exists professional_category text,
+  add column if not exists education text,
+  add column if not exists previous_employers text,
+  add column if not exists previous_job_locations text,
+  add column if not exists availability text,
+  add column if not exists salary_expectation text,
+  add column if not exists languages text,
+  add column if not exists professional_skills text,
+  add column if not exists preferred_work_location text,
+  add column if not exists experience_years integer,
+  add column if not exists "references" text;
+
+notify pgrst, 'reload schema';
