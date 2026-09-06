@@ -13,3 +13,5 @@ export async function buildApp() {
   await app.register(lifecycleRoutes)
   return app
 }
+
+export default buildApp
