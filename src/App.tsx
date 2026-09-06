@@ -840,6 +840,10 @@ function App() {
       setAuthMode('signin')
       setAuthMessage('')
     }
+    if (authMode === 'signin' && !result.error) {
+      setAuthOpen(false)
+      setAuthMessage('')
+    }
     if (authMode === 'reset' && !result.error) {
       window.history.replaceState({}, '', '/')
       setAuthMode('signin')
