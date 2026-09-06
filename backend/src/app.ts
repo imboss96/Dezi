@@ -1,5 +1,6 @@
 import Fastify from 'fastify'
 import cors from '@fastify/cors'
+import type { IncomingMessage, ServerResponse } from 'node:http'
 import { config } from './config.js'
 import { healthRoutes } from './routes/health.js'
 import { profileRoutes } from './routes/profiles.js'
@@ -14,4 +15,14 @@ export async function buildApp() {
   return app
 }
 
-export default buildApp
+let appPromise: ReturnType<typeof buildApp> | undefined
+
+export default async function handler(
+  request: IncomingMessage,
+  response: ServerResponse,
+) {
+  appPromise ??= buildApp()
+  const app = await appPromise
+  await app.ready()
+  app.server.emit('request', request, response)
+}
